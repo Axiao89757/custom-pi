@@ -9,6 +9,7 @@ import {
 	CustomEditor,
 	FooterComponent,
 	InteractiveMode,
+	SkillInvocationMessageComponent,
 	ToolExecutionComponent,
 	UserMessageComponent,
 	type ExtensionAPI,
@@ -1237,6 +1238,10 @@ function installUserMessageTimestamps(): void {
 	) => {
 		if (message.role !== "user" || !Array.isArray(message.content)
 			|| !message.content.some((block) => block.type === "image")) return;
+
+		for (const component of instance.chatContainer.children.slice(beforeCount)) {
+			if (component instanceof SkillInvocationMessageComponent) component.setExpanded(false);
+		}
 
 		const userComponent = instance.chatContainer.children
 			.slice(beforeCount)

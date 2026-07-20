@@ -25,7 +25,7 @@ const loaderUrl = pathToFileURL(join(piRoot, loaderRelativePath));
 const indexUrl = pathToFileURL(join(piRoot, "dist", "index.js"));
 const themeUrl = pathToFileURL(join(piRoot, "dist", "modes", "interactive", "theme", "theme.js"));
 const { loadExtensions } = await import(loaderUrl.href);
-const { FooterComponent, InteractiveMode, UserMessageComponent } = await import(indexUrl.href);
+const { FooterComponent, InteractiveMode, SkillInvocationMessageComponent, UserMessageComponent } = await import(indexUrl.href);
 const { initTheme } = await import(themeUrl.href);
 initTheme("dark");
 
@@ -59,6 +59,15 @@ interactivePrototype.addMessageToChat = function (message) {
 	const text = Array.isArray(message.content)
 		? message.content.filter((block) => block.type === "text").map((block) => block.text).join("")
 		: "";
+	if (message.testSkillImage) {
+		const skill = new SkillInvocationMessageComponent({
+			name: "diagnosing-bugs",
+			location: "/tmp/diagnosing-bugs/SKILL.md",
+			content: "full skill content",
+		});
+		skill.setExpanded(true);
+		this.chatContainer.children.push(skill);
+	}
 	const component = new UserMessageComponent(text);
 	component.customPiImages = [{
 		component: { invalidate() {} },
@@ -105,6 +114,24 @@ test("context title writes stay behind the agent tool", async () => {
 		{ message: "Usage: /ctx-title [clear]", level: "error" },
 		{ message: "Usage: /ctx-title [clear]", level: "error" },
 	]);
+});
+
+test("clipboard image messages keep skill invocations collapsed", () => {
+	const instance = { chatContainer: { children: [] } };
+	interactivePrototype.addMessageToChat.call(instance, {
+		role: "user",
+		timestamp: Date.now(),
+		testSkillImage: true,
+		content: [
+			{ type: "text", text: "[Image attached: screenshot.png]" },
+			{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+		],
+	});
+
+	const skill = instance.chatContainer.children.find((component) => component instanceof SkillInvocationMessageComponent);
+	assert.ok(skill);
+	assert.equal(skill.expanded, false);
+	legacyBindings = 0;
 });
 
 test("user messages reserve one blank row after the timestamp", () => {
