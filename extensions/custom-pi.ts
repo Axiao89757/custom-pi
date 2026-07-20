@@ -41,6 +41,8 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 const MAX_CALL_LENGTH = 120;
 const MAX_ERROR_LENGTH = 180;
 const MAX_CTX_TITLE_LENGTH = 120;
+const MAX_DISPLAY_SUMMARY_LENGTH = 40;
+const DISPLAY_SUMMARY_FIELD = "_display_summary";
 const CTX_TITLE_STATUS_KEY = "ctx-title";
 const CTX_TITLE_ENTRY = "custom-pi-ctx-title";
 const AGENT_TIMING_ENTRY = "compact-agent-timing";
@@ -106,6 +108,7 @@ type GenericToolResult = {
 };
 
 type GenericToolExecutionInstance = {
+	args: Record<string, unknown>;
 	expanded: boolean;
 	imageComponents: Component[];
 	imageSpacers: Component[];
@@ -118,6 +121,7 @@ type GenericToolExecutionInstance = {
 type GenericFallbackPrototype = {
 	compactAllToolDurationPatched?: boolean;
 	compactAllToolOutputPatched?: boolean;
+	customPiDisplaySummaryHiddenPatched?: boolean;
 	createCallFallback(this: GenericToolExecutionInstance): Component;
 	createResultFallback(this: GenericToolExecutionInstance): Component | undefined;
 	formatToolExecution(this: GenericToolExecutionInstance): string;
@@ -133,11 +137,13 @@ type GenericTiming = {
 	endedAt?: number;
 };
 
-type CollapsedToolStyle = "minimal" | "compact";
+type ToolDisplayMode = "full" | "compact" | "command" | "friendly";
 
 type MinimalToolDisplayState = {
 	animationTimer?: ReturnType<typeof setInterval>;
-	collapsedStyle: CollapsedToolStyle;
+	// Retained for wrappers installed by pre-Friendly /reload versions.
+	collapsedStyle: "minimal" | "compact";
+	displayMode: ToolDisplayMode;
 	groupGeneration: number;
 	groupsAfterBody: Set<number>;
 	renderMinimal?: (instance: MinimalToolExecutionInstance, width: number) => string[];
@@ -355,6 +361,42 @@ function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+type ObjectParameterSchema = {
+	properties?: Record<string, unknown>;
+	required?: string[];
+	type?: unknown;
+};
+
+function addDisplaySummaryParameter(tool: Pick<ToolDefinition, "parameters">): boolean {
+	const schema = tool.parameters as unknown as ObjectParameterSchema;
+	if (schema.type !== "object" || !schema.properties) return false;
+
+	if (!(DISPLAY_SUMMARY_FIELD in schema.properties)) {
+		schema.properties = {
+			[DISPLAY_SUMMARY_FIELD]: Type.String({
+				minLength: 1,
+				maxLength: MAX_DISPLAY_SUMMARY_LENGTH,
+				description: "Required context-aware human-friendly action intent.",
+			}),
+			...schema.properties,
+		};
+	}
+	schema.required = [
+		DISPLAY_SUMMARY_FIELD,
+		...(schema.required ?? []).filter((key) => key !== DISPLAY_SUMMARY_FIELD),
+	];
+	return true;
+}
+
+function withDisplaySummarySchema<T extends ToolDefinition>(tool: T): T {
+	addDisplaySummaryParameter(tool);
+	return tool;
+}
+
+function addDisplaySummaryToAllTools(pi: ExtensionAPI): void {
+	for (const tool of pi.getAllTools()) addDisplaySummaryParameter(tool);
+}
+
 function clipboardImageMimeType(bytes: Buffer): string | undefined {
 	if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
 		return "image/png";
@@ -432,6 +474,56 @@ function genericErrorText(instance: GenericToolExecutionInstance): string | unde
 function genericErrorComponent(instance: GenericToolExecutionInstance): Component | undefined {
 	const error = genericErrorText(instance);
 	return error ? new Text(error, 0, 0) : undefined;
+}
+
+function argsWithoutDisplaySummary(args: Record<string, unknown>): Record<string, unknown> {
+	if (!args || !Object.prototype.hasOwnProperty.call(args, DISPLAY_SUMMARY_FIELD)) return args;
+	const cleanArgs = { ...args };
+	delete cleanArgs[DISPLAY_SUMMARY_FIELD];
+	return cleanArgs;
+}
+
+function installDisplaySummaryHiding(): void {
+	const prototype = ToolExecutionComponent.prototype as unknown as GenericFallbackPrototype;
+	if (prototype.customPiDisplaySummaryHiddenPatched) return;
+
+	const getCallRenderer = prototype.getCallRenderer;
+	prototype.getCallRenderer = function () {
+		const renderer = getCallRenderer.call(this);
+		if (!renderer) return undefined;
+		return ((args, theme, context) => {
+			const cleanArgs = argsWithoutDisplaySummary(args);
+			return renderer(cleanArgs, theme, { ...context, args: cleanArgs });
+		}) as CallRenderer;
+	};
+
+	const getResultRenderer = prototype.getResultRenderer;
+	prototype.getResultRenderer = function () {
+		const renderer = getResultRenderer.call(this);
+		if (!renderer) return undefined;
+		return ((result, options, theme, context) => {
+			const cleanArgs = argsWithoutDisplaySummary(context.args);
+			return renderer(result, options, theme, { ...context, args: cleanArgs });
+		}) as ResultRenderer;
+	};
+
+	const formatToolExecution = prototype.formatToolExecution;
+	prototype.formatToolExecution = function () {
+		const originalArgs = this.args;
+		this.args = argsWithoutDisplaySummary(originalArgs);
+		try {
+			return formatToolExecution.call(this);
+		} finally {
+			this.args = originalArgs;
+		}
+	};
+
+	Object.defineProperty(prototype, "customPiDisplaySummaryHiddenPatched", {
+		value: true,
+		configurable: false,
+		enumerable: false,
+		writable: false,
+	});
 }
 
 function installGenericFallbackCompaction(): void {
@@ -609,16 +701,25 @@ function minimalToolDisplayState(): MinimalToolDisplayState {
 	};
 	const state = globals[MINIMAL_TOOL_STATE] ??= {
 		collapsedStyle: "minimal",
+		displayMode: "friendly",
 		groupGeneration: 0,
 		groupsAfterBody: new Set<number>(),
 		runningTools: new Set<MinimalToolExecutionInstance>(),
 		spacedGroups: new Set<number>(),
 	};
+	state.displayMode ??= "friendly";
+	state.collapsedStyle = state.displayMode === "compact" ? "compact" : "minimal";
 	state.groupGeneration ??= 0;
 	state.groupsAfterBody ??= new Set<number>();
 	state.runningTools ??= new Set<MinimalToolExecutionInstance>();
 	state.spacedGroups ??= new Set<number>();
 	return state;
+}
+
+function setToolDisplayMode(mode: ToolDisplayMode): void {
+	const state = minimalToolDisplayState();
+	state.displayMode = mode;
+	state.collapsedStyle = mode === "compact" ? "compact" : "minimal";
 }
 
 function assistantHasVisibleBody(message: Pick<AssistantMessage, "content">): boolean {
@@ -732,6 +833,14 @@ function minimalToolSummary(instance: MinimalToolExecutionInstance): MinimalTool
 	}
 }
 
+function friendlyToolSummary(instance: MinimalToolExecutionInstance): MinimalToolSummary {
+	const value = instance.args?.[DISPLAY_SUMMARY_FIELD];
+	const summary = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+	return summary
+		? { label: compactText(summary, MAX_DISPLAY_SUMMARY_LENGTH), detail: "" }
+		: minimalToolSummary(instance);
+}
+
 function styleMinimalToolDetail(summary: MinimalToolSummary, theme: FooterTheme | undefined): string {
 	if (!summary.detail) return "";
 	const range = summary.emphasizedDetailRange;
@@ -789,7 +898,9 @@ function renderMinimalTool(instance: MinimalToolExecutionInstance, width: number
 	}
 
 	trackMinimalToolAnimation(instance);
-	const toolSummary = minimalToolSummary(instance);
+	const toolSummary = toolState.displayMode === "friendly"
+		? friendlyToolSummary(instance)
+		: minimalToolSummary(instance);
 	const spinnerFrame = SPINNER_GLYPHS[Math.floor(performance.now() / 120) % SPINNER_GLYPHS.length];
 	const runningMarker = instance.isPartial
 		? `${TOOL_GREEN}${spinnerFrame}${ANSI_STYLE_RESET} `
@@ -1773,9 +1884,11 @@ function withCompactResult(tool: ToolDefinition): ToolDefinition {
 }
 
 function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
+	const register = (tool: ToolDefinition) => pi.registerTool(withDisplaySummarySchema(tool));
+
 	const bash = createBashToolDefinition(cwd);
 	const renderExpandedBashCall = bash.renderCall;
-	pi.registerTool(withCompactResult({
+	register(withCompactResult({
 		...bash,
 		renderCall(args, theme, context) {
 			const durationMs = updateTiming(context);
@@ -1791,7 +1904,7 @@ function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
 
 	const edit = createEditToolDefinition(cwd);
 	const renderExpandedEditCall = edit.renderCall;
-	pi.registerTool(withCompactResult({
+	register(withCompactResult({
 		...edit,
 		renderCall(args, theme, context) {
 			const durationMs = updateTiming(context);
@@ -1806,7 +1919,7 @@ function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
 
 	const write = createWriteToolDefinition(cwd);
 	const renderExpandedWriteCall = write.renderCall;
-	pi.registerTool(withCompactResult({
+	register(withCompactResult({
 		...write,
 		renderCall(args, theme, context) {
 			const durationMs = updateTiming(context);
@@ -1820,7 +1933,7 @@ function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
 
 	const grep = createGrepToolDefinition(cwd);
 	const renderExpandedGrepCall = grep.renderCall;
-	pi.registerTool(withCompactResult({
+	register(withCompactResult({
 		...grep,
 		renderCall(args, theme, context) {
 			const durationMs = updateTiming(context);
@@ -1833,7 +1946,7 @@ function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
 
 	const find = createFindToolDefinition(cwd);
 	const renderExpandedFindCall = find.renderCall;
-	pi.registerTool(withCompactResult({
+	register(withCompactResult({
 		...find,
 		renderCall(args, theme, context) {
 			const durationMs = updateTiming(context);
@@ -1846,7 +1959,7 @@ function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
 
 	const ls = createLsToolDefinition(cwd);
 	const renderExpandedLsCall = ls.renderCall;
-	pi.registerTool(withCompactResult({
+	register(withCompactResult({
 		...ls,
 		renderCall(args, theme, context) {
 			const durationMs = updateTiming(context);
@@ -1861,6 +1974,7 @@ function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
 export default function (pi: ExtensionAPI) {
 	installGenericFallbackCompaction();
 	installGenericDuration();
+	installDisplaySummaryHiding();
 	installMinimalToolRendering();
 	installMinimalToolGrouping();
 	installTimingEntrySpacing();
@@ -1944,7 +2058,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	pi.registerTool({
+	pi.registerTool(withDisplaySummarySchema({
 		name: "set_ctx_title",
 		label: "Set Context Title",
 		description: "Set and persist the stable parent context title shown in Pi's footer and mirror it to the current session display name. Follow the active project's instructions when choosing the title. Omit title to clear both values.",
@@ -1969,7 +2083,7 @@ export default function (pi: ExtensionAPI) {
 				details: { title: title ?? null, sessionName: title ?? null },
 			};
 		},
-	});
+	}));
 
 	pi.registerCommand("ctx-title", {
 		description: "Show or clear the stable parent context title and session display name",
@@ -2000,10 +2114,14 @@ export default function (pi: ExtensionAPI) {
 		return attachClipboardImages(event);
 	});
 
-	pi.on("before_agent_start", (_event, ctx) => {
+	pi.on("before_agent_start", (event, ctx) => {
+		addDisplaySummaryToAllTools(pi);
 		agentStartedAt ??= pendingAgentStartedAt ?? performance.now();
 		pendingAgentStartedAt = undefined;
 		startWorkingTimer(ctx);
+		return {
+			systemPrompt: `${event.systemPrompt}\n\nFor every tool call, set ${DISPLAY_SUMMARY_FIELD} to a concise, human-friendly action intent in the user's language (maximum ${MAX_DISPLAY_SUMMARY_LENGTH} characters). Use the full task and conversation context to explain why this step is useful; do not merely translate the tool name or paraphrase the raw command. Do not state status, completion, results, Markdown, or raw command syntax.`,
+		};
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
@@ -2062,14 +2180,37 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setHiddenThinkingLabel();
 		}
 
-		ctx.ui.setToolsExpanded(false);
 		registerCompactTools(pi, ctx.cwd);
+		addDisplaySummaryToAllTools(pi);
+		ctx.ui.setToolsExpanded(toolState.displayMode === "full");
+	});
+
+	pi.on("context", (event) => {
+		let changed = false;
+		const messages = event.messages.map((message) => {
+			if (message.role !== "assistant") return message;
+			const content = message.content.map((block) => {
+				if (block.type !== "toolCall" || !Object.prototype.hasOwnProperty.call(block.arguments, DISPLAY_SUMMARY_FIELD)) {
+					return block;
+				}
+				changed = true;
+				return { ...block, arguments: argsWithoutDisplaySummary(block.arguments) };
+			});
+			return content.some((block, index) => block !== message.content[index])
+				? { ...message, content }
+				: message;
+		});
+		return changed ? { messages } : undefined;
+	});
+
+	pi.on("tool_call", (event) => {
+		delete event.input[DISPLAY_SUMMARY_FIELD];
 	});
 
 	pi.on("tool_execution_start", (_event, ctx) => {
-		if (ctx.mode === "tui" && ctx.ui.getToolsExpanded()) {
-			ctx.ui.setToolsExpanded(false);
-		}
+		if (ctx.mode !== "tui") return;
+		const shouldExpand = minimalToolDisplayState().displayMode === "full";
+		if (ctx.ui.getToolsExpanded() !== shouldExpand) ctx.ui.setToolsExpanded(shouldExpand);
 	});
 
 	pi.on("message_start", (event) => {
@@ -2090,31 +2231,33 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tool-style", {
-		description: "Set collapsed tool style: minimal or compact",
-		getArgumentCompletions: (prefix) => ["minimal", "compact"]
+		description: "Set tool display mode: full, compact, command, or friendly",
+		getArgumentCompletions: (prefix) => ["full", "compact", "command", "friendly"]
 			.filter((value) => value.startsWith(prefix))
 			.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
-			const style = args.trim().toLowerCase();
-			if (!style) {
-				ctx.ui.notify(`Collapsed tool style: ${minimalToolDisplayState().collapsedStyle}`, "info");
+			const mode = args.trim().toLowerCase();
+			if (!mode) {
+				ctx.ui.notify(`Tool display mode: ${minimalToolDisplayState().displayMode}`, "info");
 				return;
 			}
-			if (style !== "minimal" && style !== "compact") {
-				ctx.ui.notify("Usage: /tool-style minimal|compact", "error");
+			if (mode !== "full" && mode !== "compact" && mode !== "command" && mode !== "friendly") {
+				ctx.ui.notify("Usage: /tool-style full|compact|command|friendly", "error");
 				return;
 			}
-			minimalToolDisplayState().collapsedStyle = style;
-			ctx.ui.setToolsExpanded(false);
-			ctx.ui.notify(`Collapsed tool style: ${style}. Press Ctrl+O for full output.`, "info");
+			setToolDisplayMode(mode);
+			ctx.ui.setToolsExpanded(mode === "full");
+			ctx.ui.notify(`Tool display mode: ${mode}`, "info");
 		},
 	});
 
 	pi.registerCommand("compact-tools", {
-		description: "Collapse tool output using the selected collapsed style",
+		description: "Leave Full mode and return to Friendly rendering",
 		handler: async (_args, ctx) => {
+			const state = minimalToolDisplayState();
+			if (state.displayMode === "full") setToolDisplayMode("friendly");
 			ctx.ui.setToolsExpanded(false);
-			ctx.ui.notify("Tool output collapsed. Press Ctrl+O to expand it.", "info");
+			ctx.ui.notify(`Tool display mode: ${minimalToolDisplayState().displayMode}`, "info");
 		},
 	});
 }

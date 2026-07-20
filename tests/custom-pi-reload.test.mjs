@@ -25,7 +25,7 @@ const loaderUrl = pathToFileURL(join(piRoot, loaderRelativePath));
 const indexUrl = pathToFileURL(join(piRoot, "dist", "index.js"));
 const themeUrl = pathToFileURL(join(piRoot, "dist", "modes", "interactive", "theme", "theme.js"));
 const { loadExtensions } = await import(loaderUrl.href);
-const { FooterComponent, InteractiveMode, SkillInvocationMessageComponent, UserMessageComponent, parseSkillBlock } = await import(indexUrl.href);
+const { FooterComponent, InteractiveMode, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, parseSkillBlock } = await import(indexUrl.href);
 const { initTheme } = await import(themeUrl.href);
 initTheme("dark");
 
@@ -96,6 +96,8 @@ test("context title writes stay behind the agent tool", async () => {
 	assert.equal(customPiExtension.commands.has("workspace-context"), false);
 	assert.equal(customPiExtension.tools.has("set_workspace_context"), false);
 	assert.equal("title" in tool.definition.parameters.properties, true);
+	assert.equal("_display_summary" in tool.definition.parameters.properties, true);
+	assert.equal(tool.definition.parameters.required.includes("_display_summary"), true);
 	assert.equal("status" in tool.definition.parameters.properties, false);
 	assert.equal(command.description, "Show or clear the stable parent context title and session display name");
 	assert.match(tool.definition.description, /active project's instructions/);
@@ -111,6 +113,86 @@ test("context title writes stay behind the agent tool", async () => {
 		{ message: "Usage: /ctx-title [clear]", level: "error" },
 		{ message: "Usage: /ctx-title [clear]", level: "error" },
 	]);
+});
+
+test("Friendly tool summaries are display-only and all four modes are selectable", async () => {
+	const toolCallHandlers = customPiExtension.handlers.get("tool_call") ?? [];
+	assert.equal(toolCallHandlers.length, 1);
+	const toolCall = {
+		type: "tool_call",
+		toolName: "probe",
+		toolCallId: "probe-call",
+		input: { query: "raw query", _display_summary: "检查后台会话状态" },
+	};
+	for (const handler of toolCallHandlers) await handler(toolCall, {});
+	assert.deepEqual(toolCall.input, { query: "raw query" });
+
+	const contextHandlers = customPiExtension.handlers.get("context") ?? [];
+	assert.equal(contextHandlers.length, 1);
+	const originalArguments = { query: "raw query", _display_summary: "检查后台会话状态" };
+	const contextEvent = {
+		type: "context",
+		messages: [{ role: "assistant", content: [{ type: "toolCall", id: "probe-call", name: "probe", arguments: originalArguments }] }],
+	};
+	const contextResult = await contextHandlers[0](contextEvent, {});
+	assert.deepEqual(contextResult.messages[0].content[0].arguments, { query: "raw query" });
+	assert.equal(originalArguments._display_summary, "检查后台会话状态");
+
+	const toolStyle = customPiExtension.commands.get("tool-style");
+	assert.ok(toolStyle);
+	assert.deepEqual(
+		toolStyle.getArgumentCompletions("").map((entry) => entry.value),
+		["full", "compact", "command", "friendly"],
+	);
+	const expandedStates = [];
+	const notifications = [];
+	const ctx = {
+		ui: {
+			notify: (message, level) => notifications.push({ message, level }),
+			setToolsExpanded: (expanded) => expandedStates.push(expanded),
+		},
+	};
+	await toolStyle.handler("friendly", ctx);
+
+	const component = new ToolExecutionComponent(
+		"probe",
+		"probe-call",
+		{ query: "raw query", _display_summary: "检查后台会话状态" },
+		{},
+		undefined,
+		{ requestRender() {} },
+		repositoryRoot,
+	);
+	component.updateResult({ content: [], details: undefined, isError: false });
+	const friendlyLines = component.render(100).map(stripTerminalControls);
+	assert.equal(friendlyLines.some((line) => line.includes("检查后台会话状态")), true);
+	assert.equal(friendlyLines.some((line) => line.includes("raw query")), false);
+
+	component.updateResult({
+		content: [{ type: "text", text: "probe failed" }],
+		details: undefined,
+		isError: true,
+	});
+	const failedLines = component.render(100).map(stripTerminalControls);
+	assert.equal(failedLines.some((line) => line.includes("检查后台会话状态")), true);
+	assert.equal(failedLines.some((line) => line.includes("probe failed")), true);
+
+	await toolStyle.handler("command", ctx);
+	const commandLines = component.render(100).map(stripTerminalControls);
+	assert.equal(commandLines.some((line) => line.includes("raw query")), true);
+	assert.equal(commandLines.some((line) => line.includes("检查后台会话状态")), false);
+
+	await toolStyle.handler("full", ctx);
+	component.setExpanded(true);
+	const fullLines = component.render(100).map(stripTerminalControls);
+	assert.equal(fullLines.some((line) => line.includes("_display_summary")), false);
+	assert.equal(expandedStates.at(-1), true);
+	assert.deepEqual(notifications.map((entry) => entry.message), [
+		"Tool display mode: friendly",
+		"Tool display mode: command",
+		"Tool display mode: full",
+	]);
+	await toolStyle.handler("friendly", ctx);
 });
 
 test("skill messages stay collapsed and image binding does not leak skill text", () => {
