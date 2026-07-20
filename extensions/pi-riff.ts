@@ -382,6 +382,7 @@ function addToolIntentParameter(tool: Pick<ToolDefinition, "parameters">): boole
 	if (!(TOOL_INTENT_FIELD in schema.properties)) {
 		schema.properties = {
 			[TOOL_INTENT_FIELD]: Type.String({
+				minLength: 1,
 				maxLength: MAX_TOOL_INTENT_LENGTH,
 				description: "Human-friendly purpose of this tool call in the full task context. Explain why the step is useful; do not state status, results, Markdown, or raw command syntax.",
 			}),
@@ -739,9 +740,11 @@ function ensureToolIntentArgument(message: AssistantMessage): void {
 	for (const block of message.content) {
 		if (block.type !== "toolCall") continue;
 		const toolCall = block as typeof block & { arguments?: Record<string, unknown> };
-		if (!toolCall.arguments || typeof toolCall.arguments[TOOL_INTENT_FIELD] === "string") continue;
-		// Empty intent satisfies local validation while Friendly deliberately falls back to Command.
-		toolCall.arguments[TOOL_INTENT_FIELD] = "";
+		if (!toolCall.arguments) continue;
+		const intent = toolCall.arguments[TOOL_INTENT_FIELD];
+		if (typeof intent === "string" && intent.length > 0) continue;
+		// A blank sentinel passes minLength validation, then Friendly trims it into Command fallback.
+		toolCall.arguments[TOOL_INTENT_FIELD] = " ";
 	}
 }
 
@@ -2164,7 +2167,7 @@ export default function (pi: ExtensionAPI) {
 		pendingAgentStartedAt = undefined;
 		startWorkingTimer(ctx);
 		return {
-			systemPrompt: `${event.systemPrompt}\n\nEvery tool call must provide ${TOOL_INTENT_FIELD}: a concise, human-friendly purpose in the user's language (maximum ${MAX_TOOL_INTENT_LENGTH} characters). Use the full task and conversation context to explain why the step is useful; do not merely translate the tool name or paraphrase the raw command. Do not state status, completion, results, Markdown, or raw command syntax.`,
+			systemPrompt: `${event.systemPrompt}\n\nEvery tool call must provide ${TOOL_INTENT_FIELD}: a concise, human-friendly purpose in the user's language (maximum ${MAX_TOOL_INTENT_LENGTH} characters). Use the full task and conversation context to explain why the step is useful; do not merely translate the tool name or paraphrase the raw command. Do not state status, completion, results, Markdown, or raw command syntax. Example for a repository status check: describe the purpose as \"Confirm the repository is clean before publishing\" in the user's language, not \"Run git status\".`,
 		};
 	});
 
@@ -2265,7 +2268,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_update", (event) => {
 		const message = event.message as AssistantMessage;
-		ensureToolIntentArgument(message);
 		cleanThinkingBlocks(message);
 		if (message.role === "assistant") markMinimalToolGroupAfterBody(message);
 	});

@@ -158,6 +158,7 @@ test("reload removes the legacy display summary field from tool schemas", () => 
 				hasLegacyRequired: tool.parameters.required.includes("_display_summary"),
 				hasIntentProperty: "intent" in tool.parameters.properties,
 				hasIntentRequired: tool.parameters.required.includes("intent"),
+				intentMinLength: tool.parameters.properties.intent.minLength ?? null,
 			}));
 		} finally {
 			session.dispose();
@@ -174,6 +175,7 @@ test("reload removes the legacy display summary field from tool schemas", () => 
 		hasLegacyRequired: false,
 		hasIntentProperty: true,
 		hasIntentRequired: true,
+		intentMinLength: 1,
 	});
 });
 
@@ -259,7 +261,7 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 	await toolStyle.handler("friendly", ctx);
 });
 
-test("missing tool intent falls back directly to Command rendering", async () => {
+test("missing tool intent waits for the final message before Command fallback", async () => {
 	const message = {
 		role: "assistant",
 		content: [
@@ -270,7 +272,12 @@ test("missing tool intent falls back directly to Command rendering", async () =>
 	for (const handler of customPiExtension.handlers.get("message_update") ?? []) {
 		await handler({ type: "message_update", message }, {});
 	}
-	assert.equal(message.content[1].arguments.intent, "");
+	assert.equal("intent" in message.content[1].arguments, false);
+
+	for (const handler of customPiExtension.handlers.get("message_end") ?? []) {
+		await handler({ type: "message_end", message }, {});
+	}
+	assert.equal(message.content[1].arguments.intent, " ");
 
 	const component = new ToolExecutionComponent(
 		"bash",
