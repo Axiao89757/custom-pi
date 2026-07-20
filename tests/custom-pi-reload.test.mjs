@@ -23,8 +23,11 @@ if (!existsSync(join(piRoot, loaderRelativePath))) {
 assert.ok(existsSync(join(piRoot, loaderRelativePath)), `Cannot locate Pi package from ${piExecutable}`);
 const loaderUrl = pathToFileURL(join(piRoot, loaderRelativePath));
 const indexUrl = pathToFileURL(join(piRoot, "dist", "index.js"));
+const themeUrl = pathToFileURL(join(piRoot, "dist", "modes", "interactive", "theme", "theme.js"));
 const { loadExtensions } = await import(loaderUrl.href);
 const { InteractiveMode, UserMessageComponent } = await import(indexUrl.href);
+const { initTheme } = await import(themeUrl.href);
+initTheme("dark");
 
 let legacyBindings = 0;
 const userMessagePrototype = UserMessageComponent.prototype;
@@ -64,6 +67,20 @@ Object.defineProperty(interactivePrototype, "customPiUserImagesPatched", {
 
 const loaded = await loadExtensions([extensionPath], repositoryRoot);
 assert.deepEqual(loaded.errors, []);
+
+const stripTerminalControls = (line) => line
+	.replace(/\x1b\]133;[ABC]\x07/g, "")
+	.replace(/\x1b\[[0-9;]*m/g, "");
+
+test("user messages reserve one blank row after the timestamp", () => {
+	const message = new UserMessageComponent("spacing test");
+	message.customPiTimestamp = new Date(2026, 6, 20, 10, 34).getTime();
+
+	const lines = message.render(80);
+
+	assert.equal(lines.at(-1), " ".repeat(80));
+	assert.equal(stripTerminalControls(lines.at(-2)).trim(), "7.20 10:34");
+});
 
 test("setExpanded discards image records retained from the pre-thumbnail patch", () => {
 	let invalidations = 0;

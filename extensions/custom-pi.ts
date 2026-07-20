@@ -1151,6 +1151,7 @@ function renderRightAlignedUserMessage(instance: UserMessageInstance, width: num
 	if (lines.length > 0) {
 		lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
+		lines.push(" ".repeat(width));
 	}
 	return lines;
 }
