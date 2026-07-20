@@ -35,18 +35,18 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
-// Global Custom Pi behavior: compact tools, focused footer data, workspace status, and clipboard images.
+// Global Custom Pi behavior: compact tools, focused footer data, context title, and clipboard images.
 const MAX_CALL_LENGTH = 120;
 const MAX_ERROR_LENGTH = 180;
-const MAX_WORKSPACE_CONTEXT_LENGTH = 120;
-const WORKSPACE_CONTEXT_STATUS_KEY = "workspace-context";
-const WORKSPACE_CONTEXT_ENTRY = "custom-pi-workspace-context";
+const MAX_CTX_TITLE_LENGTH = 120;
+const CTX_TITLE_STATUS_KEY = "ctx-title";
+const CTX_TITLE_ENTRY = "custom-pi-ctx-title";
 const AGENT_TIMING_ENTRY = "compact-agent-timing";
 const WORKING_TIMER_REFRESH_MS = 1000;
 const WORKING_HIGHLIGHT = "\x1b[1;38;2;196;132;252m";
 const TOOL_GREEN = "\x1b[38;2;86;196;112m";
 const TOOL_GREEN_BOLD = "\x1b[1;38;2;86;196;112m";
-const WORKSPACE_CONTEXT_BADGE = "\x1b[1;38;2;255;255;255;48;2;109;40;217m";
+const CTX_TITLE_BADGE = "\x1b[1;38;2;255;255;255;48;2;109;40;217m";
 const ANSI_STYLE_RESET = "\x1b[0m";
 const ANSI_DIM = "\x1b[2m";
 const ANSI_SGR = /\x1b\[[0-9;]*m/g;
@@ -192,8 +192,8 @@ type AgentTimingEntry = {
 	completedAt?: number;
 };
 
-type WorkspaceContextEntry = {
-	status: string | null;
+type CtxTitleEntry = {
+	title: string | null;
 };
 
 type UserMessageTimeState = {
@@ -330,7 +330,7 @@ type FooterInstance = {
 type FooterPrototype = {
 	compactDynamicStatsPatched?: boolean;
 	compactSessionIdentityPatched?: boolean;
-	compactContextStatusLinePatched?: boolean;
+	compactCtxTitleStatusLinePatched?: boolean;
 	render(this: FooterInstance, width: number): string[];
 };
 
@@ -1399,26 +1399,26 @@ function sanitizeFooterText(text: string): string {
 	return text.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/ +/g, " ").trim();
 }
 
-function normalizeWorkspaceContext(value: unknown): string | undefined {
+function normalizeCtxTitle(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
-	const status = sanitizeFooterText(value).slice(0, MAX_WORKSPACE_CONTEXT_LENGTH);
-	return status || undefined;
+	const title = sanitizeFooterText(value).slice(0, MAX_CTX_TITLE_LENGTH);
+	return title || undefined;
 }
 
-function restoreWorkspaceContext(ctx: ExtensionContext): { found: boolean; status: string | undefined } {
+function restoreCtxTitle(ctx: ExtensionContext): { found: boolean; title: string | undefined } {
 	let found = false;
-	let status: string | undefined;
+	let title: string | undefined;
 	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "custom" || entry.customType !== WORKSPACE_CONTEXT_ENTRY) continue;
+		if (entry.type !== "custom" || entry.customType !== CTX_TITLE_ENTRY) continue;
 		found = true;
-		const value = (entry.data as WorkspaceContextEntry | undefined)?.status;
-		status = value === null ? undefined : normalizeWorkspaceContext(value);
+		const value = (entry.data as CtxTitleEntry | undefined)?.title;
+		title = value === null ? undefined : normalizeCtxTitle(value);
 	}
-	return { found, status };
+	return { found, title };
 }
 
-function styleWorkspaceContext(status: string): string {
-	return `${WORKSPACE_CONTEXT_BADGE} ${status} ${ANSI_STYLE_RESET}`;
+function styleCtxTitle(title: string): string {
+	return `${CTX_TITLE_BADGE} ${title} ${ANSI_STYLE_RESET}`;
 }
 
 export function renderHighlightedSession(instance: FooterInstance, width: number, theme: FooterTheme): string {
@@ -1427,27 +1427,27 @@ export function renderHighlightedSession(instance: FooterInstance, width: number
 	const branch = instance.footerData.getGitBranch();
 	if (branch) location += ` (${sanitizeFooterText(branch)})`;
 
-	const contextStatus = normalizeWorkspaceContext(
-		instance.footerData.getExtensionStatuses().get(WORKSPACE_CONTEXT_STATUS_KEY),
+	const ctxTitle = normalizeCtxTitle(
+		instance.footerData.getExtensionStatuses().get(CTX_TITLE_STATUS_KEY),
 	);
-	if (!contextStatus) return truncateToWidth(theme.fg("dim", location), width, theme.fg("dim", "..."), false);
+	if (!ctxTitle) return truncateToWidth(theme.fg("dim", location), width, theme.fg("dim", "..."), false);
 
 	const separator = " • ";
-	const fullBadgeWidth = visibleWidth(contextStatus) + 2;
+	const fullBadgeWidth = visibleWidth(ctxTitle) + 2;
 	const availableForLocation = width - fullBadgeWidth - visibleWidth(separator);
 	if (availableForLocation <= 0) {
-		if (width <= 2) return truncateToWidth(contextStatus, width, "", false);
-		const visibleStatus = truncateToWidth(contextStatus, width - 2, "...", false);
-		return styleWorkspaceContext(visibleStatus);
+		if (width <= 2) return truncateToWidth(ctxTitle, width, "", false);
+		const visibleTitle = truncateToWidth(ctxTitle, width - 2, "...", false);
+		return styleCtxTitle(visibleTitle);
 	}
 
 	const visibleLocation = truncateToWidth(location, availableForLocation, "...", false);
-	return styleWorkspaceContext(contextStatus) + separator + theme.fg("dim", visibleLocation);
+	return styleCtxTitle(ctxTitle) + separator + theme.fg("dim", visibleLocation);
 }
 
 export function renderExtensionStatusLine(instance: FooterInstance, width: number): string | undefined {
 	const statuses = Array.from(instance.footerData.getExtensionStatuses().entries())
-		.filter(([key]) => key !== WORKSPACE_CONTEXT_STATUS_KEY)
+		.filter(([key]) => key !== CTX_TITLE_STATUS_KEY)
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([, text]) => text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim())
 		.filter(Boolean);
@@ -1576,7 +1576,7 @@ function installFooterIdentity(): void {
 		const theme = state.getTheme?.();
 		if (!theme || !state.renderIdentity || lines.length === 0) return lines;
 		lines[0] = state.renderIdentity(this, width, theme);
-		if (this.footerData.getExtensionStatuses().has(WORKSPACE_CONTEXT_STATUS_KEY)) {
+		if (this.footerData.getExtensionStatuses().has(CTX_TITLE_STATUS_KEY)) {
 			const otherStatusLine = renderExtensionStatusLine(this, width);
 			if (otherStatusLine) {
 				if (lines.length > 2) lines[2] = otherStatusLine;
@@ -1596,14 +1596,14 @@ function installFooterIdentity(): void {
 	});
 }
 
-function installFooterContextStatusLine(): void {
+function installFooterCtxTitleStatusLine(): void {
 	const prototype = FooterComponent.prototype as unknown as FooterPrototype;
-	if (prototype.compactContextStatusLinePatched) return;
+	if (prototype.compactCtxTitleStatusLinePatched) return;
 
 	const renderFooter = prototype.render;
 	prototype.render = function (width) {
 		const lines = [...renderFooter.call(this, width)];
-		if (!this.footerData.getExtensionStatuses().has(WORKSPACE_CONTEXT_STATUS_KEY)) return lines;
+		if (!this.footerData.getExtensionStatuses().has(CTX_TITLE_STATUS_KEY)) return lines;
 
 		const otherStatusLine = renderExtensionStatusLine(this, width);
 		if (otherStatusLine) {
@@ -1615,7 +1615,7 @@ function installFooterContextStatusLine(): void {
 		return lines;
 	};
 
-	Object.defineProperty(prototype, "compactContextStatusLinePatched", {
+	Object.defineProperty(prototype, "compactCtxTitleStatusLinePatched", {
 		value: true,
 		configurable: false,
 		enumerable: false,
@@ -1845,7 +1845,7 @@ export default function (pi: ExtensionAPI) {
 	installUserMessageTimestamps();
 	installFooterStats();
 	installFooterIdentity();
-	installFooterContextStatusLine();
+	installFooterCtxTitleStatusLine();
 	footerTimerState().suffix = undefined;
 
 	const setUserImageExpansion = (expanded: boolean, ctx: ExtensionContext) => {
@@ -1903,47 +1903,47 @@ export default function (pi: ExtensionAPI) {
 		footerTimerState().suffix = undefined;
 	};
 
-	let workspaceContextStatus: string | undefined;
-	const setWorkspaceContext = (
+	let ctxTitle: string | undefined;
+	const setCtxTitle = (
 		ctx: ExtensionContext,
-		status: string | undefined,
+		title: string | undefined,
 		persist: boolean,
 		syncSessionName = persist,
 	) => {
-		workspaceContextStatus = status;
-		ctx.ui.setStatus(WORKSPACE_CONTEXT_STATUS_KEY, status);
+		ctxTitle = title;
+		ctx.ui.setStatus(CTX_TITLE_STATUS_KEY, title);
 		// Explicit updates re-emit session_info so live session selectors refresh.
-		if (syncSessionName && (persist || pi.getSessionName() !== status)) {
-			pi.setSessionName(status ?? "");
+		if (syncSessionName && (persist || pi.getSessionName() !== title)) {
+			pi.setSessionName(title ?? "");
 		}
 		if (persist) {
-			pi.appendEntry<WorkspaceContextEntry>(WORKSPACE_CONTEXT_ENTRY, { status: status ?? null });
+			pi.appendEntry<CtxTitleEntry>(CTX_TITLE_ENTRY, { title: title ?? null });
 		}
 	};
 
 	pi.registerTool({
-		name: "set_workspace_context",
+		name: "set_ctx_title",
 		label: "Set Context Title",
-		description: "Set and persist the stable parent context title shown in Pi's footer and mirror it to the current session display name. Follow the active project's instructions when choosing the title. Omit status to clear both values.",
+		description: "Set and persist the stable parent context title shown in Pi's footer and mirror it to the current session display name. Follow the active project's instructions when choosing the title. Omit title to clear both values.",
 		promptSnippet: "Set or clear the stable parent context title and current session display name",
 		parameters: Type.Object({
-			status: Type.Optional(Type.String({
-				maxLength: MAX_WORKSPACE_CONTEXT_LENGTH,
+			title: Type.Optional(Type.String({
+				maxLength: MAX_CTX_TITLE_LENGTH,
 				description: "Short complete context title chosen according to the active project's instructions; omit to clear",
 			})),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const status = params.status === undefined ? undefined : normalizeWorkspaceContext(params.status);
-			if (params.status !== undefined && !status) throw new Error("Context title must not be empty.");
-			setWorkspaceContext(ctx, status, true);
+			const title = params.title === undefined ? undefined : normalizeCtxTitle(params.title);
+			if (params.title !== undefined && !title) throw new Error("Context title must not be empty.");
+			setCtxTitle(ctx, title, true);
 			return {
 				content: [{
 					type: "text",
-					text: status
-						? `Context title and session name set to ${status}`
+					text: title
+						? `Context title and session name set to ${title}`
 						: "Context title and session name cleared",
 				}],
-				details: { status: status ?? null, sessionName: status ?? null },
+				details: { title: title ?? null, sessionName: title ?? null },
 			};
 		},
 	});
@@ -1953,11 +1953,11 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const value = args.trim();
 			if (!value) {
-				ctx.ui.notify(`Context title: ${workspaceContextStatus ?? "unset"}`, "info");
+				ctx.ui.notify(`Context title: ${ctxTitle ?? "unset"}`, "info");
 				return;
 			}
 			if (value === "clear") {
-				setWorkspaceContext(ctx, undefined, true);
+				setCtxTitle(ctx, undefined, true);
 				return;
 			}
 			ctx.ui.notify("Usage: /ctx-title [clear]", "error");
@@ -2004,7 +2004,7 @@ export default function (pi: ExtensionAPI) {
 		pendingAgentStartedAt = undefined;
 		stopWorkingTimer();
 		stopMinimalToolAnimation();
-		setWorkspaceContext(ctx, undefined, false);
+		setCtxTitle(ctx, undefined, false);
 	});
 
 	pi.on("session_start", (_event, ctx) => {
@@ -2019,8 +2019,8 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) =>
 			new CompactRailEditor(tui, editorTheme, keybindings),
 		);
-		const restoredWorkspaceContext = restoreWorkspaceContext(ctx);
-		setWorkspaceContext(ctx, restoredWorkspaceContext.status, false, restoredWorkspaceContext.found);
+		const restoredCtxTitle = restoreCtxTitle(ctx);
+		setCtxTitle(ctx, restoredCtxTitle.title, false, restoredCtxTitle.found);
 
 		let thinkingChanged = false;
 		const historicalImages = userMessageTimeState().historicalImages;

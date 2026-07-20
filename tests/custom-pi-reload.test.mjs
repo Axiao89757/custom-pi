@@ -25,11 +25,18 @@ const loaderUrl = pathToFileURL(join(piRoot, loaderRelativePath));
 const indexUrl = pathToFileURL(join(piRoot, "dist", "index.js"));
 const themeUrl = pathToFileURL(join(piRoot, "dist", "modes", "interactive", "theme", "theme.js"));
 const { loadExtensions } = await import(loaderUrl.href);
-const { InteractiveMode, UserMessageComponent } = await import(indexUrl.href);
+const { FooterComponent, InteractiveMode, UserMessageComponent } = await import(indexUrl.href);
 const { initTheme } = await import(themeUrl.href);
 initTheme("dark");
 
 let legacyBindings = 0;
+const footerPrototype = FooterComponent.prototype;
+Object.defineProperty(footerPrototype, "compactContextStatusLinePatched", {
+	value: true,
+	configurable: false,
+	writable: false,
+});
+
 const userMessagePrototype = UserMessageComponent.prototype;
 userMessagePrototype.setExpanded = function (expanded) {
 	if (this.customPiImageExpanded === expanded) return;
@@ -69,6 +76,7 @@ const loaded = await loadExtensions([extensionPath], repositoryRoot);
 assert.deepEqual(loaded.errors, []);
 const customPiExtension = loaded.extensions.find((extension) => extension.resolvedPath === extensionPath);
 assert.ok(customPiExtension);
+assert.equal(footerPrototype.compactCtxTitleStatusLinePatched, true);
 
 const stripTerminalControls = (line) => line
 	.replace(/\x1b\]133;[ABC]\x07/g, "")
@@ -76,10 +84,13 @@ const stripTerminalControls = (line) => line
 
 test("context title writes stay behind the agent tool", async () => {
 	const command = customPiExtension.commands.get("ctx-title");
-	const tool = customPiExtension.tools.get("set_workspace_context");
+	const tool = customPiExtension.tools.get("set_ctx_title");
 	assert.ok(command);
 	assert.ok(tool);
 	assert.equal(customPiExtension.commands.has("workspace-context"), false);
+	assert.equal(customPiExtension.tools.has("set_workspace_context"), false);
+	assert.equal("title" in tool.definition.parameters.properties, true);
+	assert.equal("status" in tool.definition.parameters.properties, false);
 	assert.equal(command.description, "Show or clear the stable parent context title and session display name");
 	assert.match(tool.definition.description, /active project's instructions/);
 
