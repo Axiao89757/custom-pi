@@ -55,6 +55,7 @@ const ANSI_STYLE_RESET = "\x1b[0m";
 const ANSI_DIM = "\x1b[2m";
 const ANSI_SGR = /\x1b\[[0-9;]*m/g;
 const SPINNER_GLYPHS = ["◐", "◓", "◑", "◒"] as const;
+const TOOL_DISPLAY_MODES = ["full", "compact", "command", "friendly"] as const;
 const WORKING_SPINNER_FRAMES = SPINNER_GLYPHS
 	.map((frame) => `${WORKING_HIGHLIGHT}${frame}${ANSI_STYLE_RESET}`);
 const MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -137,7 +138,7 @@ type GenericTiming = {
 	endedAt?: number;
 };
 
-type ToolDisplayMode = "full" | "compact" | "command" | "friendly";
+type ToolDisplayMode = typeof TOOL_DISPLAY_MODES[number];
 
 type MinimalToolDisplayState = {
 	animationTimer?: ReturnType<typeof setInterval>;
@@ -147,8 +148,10 @@ type MinimalToolDisplayState = {
 	groupGeneration: number;
 	groupsAfterBody: Set<number>;
 	renderMinimal?: (instance: MinimalToolExecutionInstance, width: number) => string[];
+	fallbackSummaries: Map<string, string>;
 	runningTools: Set<MinimalToolExecutionInstance>;
 	spacedGroups: Set<number>;
+	turnIntent?: string;
 };
 
 type MinimalToolExecutionInstance = GenericToolExecutionInstance & {
@@ -259,16 +262,21 @@ type InteractiveModeInstance = {
 	chatContainer: {
 		children: Component[];
 	};
+	setToolsExpanded(expanded: boolean): void;
+	showStatus(message: string): void;
+	toolOutputExpanded: boolean;
 };
 
 type InteractiveModePrototype = {
 	customPiMarkdownThemePatched?: boolean;
 	customPiToolGroupingPatched?: boolean;
+	customPiToolModeCyclingPatched?: boolean;
 	customPiUserImagesPatched?: boolean;
 	customPiUserImagesV2Patched?: boolean;
 	customPiUserMessagesV3Patched?: boolean;
 	customPiUserMessageTimestampPatched?: boolean;
 	getMarkdownThemeWithSettings(): Record<string, unknown>;
+	toggleToolOutputExpansion(this: InteractiveModeInstance): void;
 	addMessageToChat(
 		this: InteractiveModeInstance,
 		message: { content?: AssistantMessage["content"]; role?: string; timestamp?: number | string },
@@ -373,18 +381,17 @@ function addDisplaySummaryParameter(tool: Pick<ToolDefinition, "parameters">): b
 
 	if (!(DISPLAY_SUMMARY_FIELD in schema.properties)) {
 		schema.properties = {
-			[DISPLAY_SUMMARY_FIELD]: Type.String({
+			[DISPLAY_SUMMARY_FIELD]: Type.Optional(Type.String({
 				minLength: 1,
 				maxLength: MAX_DISPLAY_SUMMARY_LENGTH,
-				description: "Required context-aware human-friendly action intent.",
-			}),
+				description: "Context-aware human-friendly action intent. Always provide this field.",
+			})),
 			...schema.properties,
 		};
 	}
-	schema.required = [
-		DISPLAY_SUMMARY_FIELD,
-		...(schema.required ?? []).filter((key) => key !== DISPLAY_SUMMARY_FIELD),
-	];
+	if (schema.required) {
+		schema.required = schema.required.filter((key) => key !== DISPLAY_SUMMARY_FIELD);
+	}
 	return true;
 }
 
@@ -702,6 +709,7 @@ function minimalToolDisplayState(): MinimalToolDisplayState {
 	const state = globals[MINIMAL_TOOL_STATE] ??= {
 		collapsedStyle: "minimal",
 		displayMode: "friendly",
+		fallbackSummaries: new Map<string, string>(),
 		groupGeneration: 0,
 		groupsAfterBody: new Set<number>(),
 		runningTools: new Set<MinimalToolExecutionInstance>(),
@@ -709,6 +717,7 @@ function minimalToolDisplayState(): MinimalToolDisplayState {
 	};
 	state.displayMode ??= "friendly";
 	state.collapsedStyle = state.displayMode === "compact" ? "compact" : "minimal";
+	state.fallbackSummaries ??= new Map<string, string>();
 	state.groupGeneration ??= 0;
 	state.groupsAfterBody ??= new Set<number>();
 	state.runningTools ??= new Set<MinimalToolExecutionInstance>();
@@ -720,6 +729,58 @@ function setToolDisplayMode(mode: ToolDisplayMode): void {
 	const state = minimalToolDisplayState();
 	state.displayMode = mode;
 	state.collapsedStyle = mode === "compact" ? "compact" : "minimal";
+}
+
+function intentLines(value: unknown): string[] {
+	if (typeof value !== "string") return [];
+	return value.split("\n")
+		.map((candidate) => candidate.replace(/^[\s#>*_`-]+|[\s*_`]+$/g, "").trim())
+		.filter(Boolean);
+}
+
+function modelAuthoredIntent(value: unknown): string | undefined {
+	const line = intentLines(value).at(-1);
+	return line ? compactText(line, MAX_DISPLAY_SUMMARY_LENGTH) : undefined;
+}
+
+function turnIntent(value: string): string | undefined {
+	const skillBlock = parseSkillBlock(value);
+	const line = intentLines(skillBlock?.userMessage ?? value).at(0);
+	return line ? compactText(line, MAX_DISPLAY_SUMMARY_LENGTH) : undefined;
+}
+
+function ensureToolDisplaySummaries(message: AssistantMessage): void {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return;
+	const fallbackSummaries = minimalToolDisplayState().fallbackSummaries;
+	let nearestIntent: string | undefined;
+
+	for (const block of message.content) {
+		if (block.type === "thinking") {
+			nearestIntent = modelAuthoredIntent(block.thinking) ?? nearestIntent;
+			continue;
+		}
+		if (block.type === "text") {
+			nearestIntent = modelAuthoredIntent(block.text) ?? nearestIntent;
+			continue;
+		}
+		if (block.type !== "toolCall") continue;
+
+		const toolCall = block as typeof block & {
+			arguments?: Record<string, unknown>;
+			id?: string;
+		};
+		if (!toolCall.arguments || !toolCall.id) continue;
+		const current = toolCall.arguments[DISPLAY_SUMMARY_FIELD];
+		const previousFallback = fallbackSummaries.get(toolCall.id);
+		if (typeof current === "string" && current.trim() && current !== previousFallback) {
+			fallbackSummaries.delete(toolCall.id);
+			continue;
+		}
+
+		const fallback = nearestIntent ?? minimalToolDisplayState().turnIntent ?? "Continue current task";
+		toolCall.arguments[DISPLAY_SUMMARY_FIELD] = fallback;
+		fallbackSummaries.set(toolCall.id, fallback);
+	}
 }
 
 function assistantHasVisibleBody(message: Pick<AssistantMessage, "content">): boolean {
@@ -979,6 +1040,26 @@ function installTimingEntrySpacing(): void {
 	Object.defineProperty(prototype, "customPiTimingEntrySpacingPatched", {
 		value: true,
 		configurable: false,
+		writable: false,
+	});
+}
+
+function installToolDisplayModeCycling(): void {
+	const prototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
+	if (prototype.customPiToolModeCyclingPatched) return;
+
+	prototype.toggleToolOutputExpansion = function () {
+		const currentIndex = TOOL_DISPLAY_MODES.indexOf(minimalToolDisplayState().displayMode);
+		const nextMode = TOOL_DISPLAY_MODES[(currentIndex + 1) % TOOL_DISPLAY_MODES.length];
+		setToolDisplayMode(nextMode);
+		this.setToolsExpanded(nextMode === "full");
+		this.showStatus(`Tool display mode: ${nextMode}`);
+	};
+
+	Object.defineProperty(prototype, "customPiToolModeCyclingPatched", {
+		value: true,
+		configurable: false,
+		enumerable: false,
 		writable: false,
 	});
 }
@@ -1976,6 +2057,7 @@ export default function (pi: ExtensionAPI) {
 	installGenericDuration();
 	installDisplaySummaryHiding();
 	installMinimalToolRendering();
+	installToolDisplayModeCycling();
 	installMinimalToolGrouping();
 	installTimingEntrySpacing();
 	installAssistantPresentation();
@@ -2116,11 +2198,12 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		addDisplaySummaryToAllTools(pi);
+		minimalToolDisplayState().turnIntent = turnIntent(event.prompt);
 		agentStartedAt ??= pendingAgentStartedAt ?? performance.now();
 		pendingAgentStartedAt = undefined;
 		startWorkingTimer(ctx);
 		return {
-			systemPrompt: `${event.systemPrompt}\n\nFor every tool call, set ${DISPLAY_SUMMARY_FIELD} to a concise, human-friendly action intent in the user's language (maximum ${MAX_DISPLAY_SUMMARY_LENGTH} characters). Use the full task and conversation context to explain why this step is useful; do not merely translate the tool name or paraphrase the raw command. Do not state status, completion, results, Markdown, or raw command syntax.`,
+			systemPrompt: `${event.systemPrompt}\n\nFor every tool call, set ${DISPLAY_SUMMARY_FIELD} to a concise, human-friendly action intent in the user's language (maximum ${MAX_DISPLAY_SUMMARY_LENGTH} characters). Use the full task and conversation context to explain why this step is useful; do not merely translate the tool name or paraphrase the raw command. Do not state status, completion, results, Markdown, or raw command syntax. When a tool call follows a reasoning or action heading, keep that heading in the user's language and make it describe the step's purpose so the UI can use it as a fallback.`,
 		};
 	});
 
@@ -2151,8 +2234,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		const toolState = minimalToolDisplayState();
 		toolState.groupGeneration = 0;
+		toolState.fallbackSummaries.clear();
 		toolState.groupsAfterBody.clear();
 		toolState.spacedGroups.clear();
+		toolState.turnIntent = undefined;
 		const activeTheme = ctx.ui.theme;
 		footerTimerState().getTheme = () => activeTheme;
 		userMessageTimeState().getTheme = () => activeTheme;
@@ -2213,18 +2298,24 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.ui.getToolsExpanded() !== shouldExpand) ctx.ui.setToolsExpanded(shouldExpand);
 	});
 
+	pi.on("tool_execution_end", (event) => {
+		minimalToolDisplayState().fallbackSummaries.delete(event.toolCallId);
+	});
+
 	pi.on("message_start", (event) => {
 		if (event.message.role === "assistant") beginMinimalToolGroup(event.message as AssistantMessage);
 	});
 
 	pi.on("message_update", (event) => {
 		const message = event.message as AssistantMessage;
+		ensureToolDisplaySummaries(message);
 		cleanThinkingBlocks(message);
 		if (message.role === "assistant") markMinimalToolGroupAfterBody(message);
 	});
 
 	pi.on("message_end", (event) => {
 		const message = event.message as AssistantMessage;
+		ensureToolDisplaySummaries(message);
 		if (message.role === "assistant") markMinimalToolGroupAfterBody(message);
 		if (!cleanThinkingBlocks(message)) return;
 		return { message: event.message };

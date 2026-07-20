@@ -5,7 +5,8 @@ Personal [Pi](https://pi.dev) extension for a compact, work-focused terminal UI.
 ## Features
 
 - Full, compact, command, and context-aware Friendly tool-call rendering
-- Model-authored Friendly intent summaries stripped before execution and later model context
+- Missing model summaries reuse same-turn intent without another model request
+- Friendly metadata stripped before execution and later model context
 - Tool and agent timing
 - Right-aligned user messages with local timestamps
 - Clipboard image attachment, thumbnails, and expanded image display
@@ -40,7 +41,7 @@ Restart Pi after the first install. Use `/reload` after subsequent updates.
 - `/compact-tools`: leave Full mode and return to Friendly rendering
 - `/ctx-title [clear]`: show or clear the stable context title
 
-`Ctrl+Shift+I` toggles user images between thumbnail and expanded display.
+`Ctrl+O` cycles Full, Compact, Command, and Friendly tool rendering. `Ctrl+Shift+I` toggles user images between thumbnail and expanded display.
 
 ## Development
 

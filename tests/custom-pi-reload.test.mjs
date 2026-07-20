@@ -97,7 +97,7 @@ test("context title writes stay behind the agent tool", async () => {
 	assert.equal(customPiExtension.tools.has("set_workspace_context"), false);
 	assert.equal("title" in tool.definition.parameters.properties, true);
 	assert.equal("_display_summary" in tool.definition.parameters.properties, true);
-	assert.equal(tool.definition.parameters.required.includes("_display_summary"), true);
+	assert.equal((tool.definition.parameters.required ?? []).includes("_display_summary"), false);
 	assert.equal("status" in tool.definition.parameters.properties, false);
 	assert.equal(command.description, "Show or clear the stable parent context title and session display name");
 	assert.match(tool.definition.description, /active project's instructions/);
@@ -193,6 +193,47 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 		"Tool display mode: full",
 	]);
 	await toolStyle.handler("friendly", ctx);
+});
+
+test("missing Friendly summaries reuse the nearest model-authored intent", async () => {
+	const message = {
+		role: "assistant",
+		content: [
+			{ type: "thinking", thinking: "核对发布后的仓库状态" },
+			{ type: "toolCall", id: "missing-summary", name: "bash", arguments: { command: "git status" } },
+		],
+	};
+	for (const handler of customPiExtension.handlers.get("message_update") ?? []) {
+		await handler({ type: "message_update", message }, {});
+	}
+	assert.equal(message.content[1].arguments._display_summary, "核对发布后的仓库状态");
+});
+
+test("Ctrl+O cycles Full, Compact, Command, and Friendly modes", () => {
+	const expandedStates = [];
+	const statuses = [];
+	const instance = {
+		toolOutputExpanded: false,
+		setToolsExpanded(expanded) {
+			this.toolOutputExpanded = expanded;
+			expandedStates.push(expanded);
+		},
+		showStatus(message) {
+			statuses.push(message);
+		},
+	};
+
+	for (let index = 0; index < 4; index++) {
+		interactivePrototype.toggleToolOutputExpansion.call(instance);
+	}
+
+	assert.deepEqual(expandedStates, [true, false, false, false]);
+	assert.deepEqual(statuses, [
+		"Tool display mode: full",
+		"Tool display mode: compact",
+		"Tool display mode: command",
+		"Tool display mode: friendly",
+	]);
 });
 
 test("skill messages stay collapsed and image binding does not leak skill text", () => {
