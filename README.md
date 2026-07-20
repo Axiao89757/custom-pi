@@ -5,8 +5,9 @@ Personal [Pi](https://pi.dev) extension for a compact, work-focused terminal UI.
 ## Features
 
 - Full, compact, command, and context-aware Friendly tool-call rendering
-- Missing model summaries reuse same-turn intent without another model request
-- Friendly metadata stripped before execution and later model context
+- Required `intent` argument for model-authored Friendly labels
+- Missing intent falls back directly to Command without another model request
+- Intent metadata stripped before execution and later model context
 - Tool and agent timing
 - Right-aligned user messages with local timestamps
 - Clipboard image attachment, thumbnails, and expanded image display

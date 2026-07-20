@@ -96,8 +96,8 @@ test("context title writes stay behind the agent tool", async () => {
 	assert.equal(customPiExtension.commands.has("workspace-context"), false);
 	assert.equal(customPiExtension.tools.has("set_workspace_context"), false);
 	assert.equal("title" in tool.definition.parameters.properties, true);
-	assert.equal("_display_summary" in tool.definition.parameters.properties, true);
-	assert.equal((tool.definition.parameters.required ?? []).includes("_display_summary"), false);
+	assert.equal("intent" in tool.definition.parameters.properties, true);
+	assert.equal((tool.definition.parameters.required ?? []).includes("intent"), true);
 	assert.equal("status" in tool.definition.parameters.properties, false);
 	assert.equal(command.description, "Show or clear the stable parent context title and session display name");
 	assert.match(tool.definition.description, /active project's instructions/);
@@ -122,21 +122,21 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 		type: "tool_call",
 		toolName: "probe",
 		toolCallId: "probe-call",
-		input: { query: "raw query", _display_summary: "检查后台会话状态" },
+		input: { query: "raw query", intent: "检查后台会话状态" },
 	};
 	for (const handler of toolCallHandlers) await handler(toolCall, {});
 	assert.deepEqual(toolCall.input, { query: "raw query" });
 
 	const contextHandlers = customPiExtension.handlers.get("context") ?? [];
 	assert.equal(contextHandlers.length, 1);
-	const originalArguments = { query: "raw query", _display_summary: "检查后台会话状态" };
+	const originalArguments = { query: "raw query", intent: "检查后台会话状态" };
 	const contextEvent = {
 		type: "context",
 		messages: [{ role: "assistant", content: [{ type: "toolCall", id: "probe-call", name: "probe", arguments: originalArguments }] }],
 	};
 	const contextResult = await contextHandlers[0](contextEvent, {});
 	assert.deepEqual(contextResult.messages[0].content[0].arguments, { query: "raw query" });
-	assert.equal(originalArguments._display_summary, "检查后台会话状态");
+	assert.equal(originalArguments.intent, "检查后台会话状态");
 
 	const toolStyle = customPiExtension.commands.get("tool-style");
 	assert.ok(toolStyle);
@@ -157,7 +157,7 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 	const component = new ToolExecutionComponent(
 		"probe",
 		"probe-call",
-		{ query: "raw query", _display_summary: "检查后台会话状态" },
+		{ query: "raw query", intent: "检查后台会话状态" },
 		{},
 		undefined,
 		{ requestRender() {} },
@@ -185,7 +185,7 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 	await toolStyle.handler("full", ctx);
 	component.setExpanded(true);
 	const fullLines = component.render(100).map(stripTerminalControls);
-	assert.equal(fullLines.some((line) => line.includes("_display_summary")), false);
+	assert.equal(fullLines.some((line) => line.includes("intent")), false);
 	assert.equal(expandedStates.at(-1), true);
 	assert.deepEqual(notifications.map((entry) => entry.message), [
 		"Tool display mode: friendly",
@@ -195,18 +195,32 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 	await toolStyle.handler("friendly", ctx);
 });
 
-test("missing Friendly summaries reuse the nearest model-authored intent", async () => {
+test("missing tool intent falls back directly to Command rendering", async () => {
 	const message = {
 		role: "assistant",
 		content: [
 			{ type: "thinking", thinking: "核对发布后的仓库状态" },
-			{ type: "toolCall", id: "missing-summary", name: "bash", arguments: { command: "git status" } },
+			{ type: "toolCall", id: "missing-intent", name: "bash", arguments: { command: "git status" } },
 		],
 	};
 	for (const handler of customPiExtension.handlers.get("message_update") ?? []) {
 		await handler({ type: "message_update", message }, {});
 	}
-	assert.equal(message.content[1].arguments._display_summary, "核对发布后的仓库状态");
+	assert.equal(message.content[1].arguments.intent, "");
+
+	const component = new ToolExecutionComponent(
+		"bash",
+		"missing-intent",
+		message.content[1].arguments,
+		{},
+		undefined,
+		{ requestRender() {} },
+		repositoryRoot,
+	);
+	component.updateResult({ content: [], details: undefined, isError: false });
+	const lines = component.render(100).map(stripTerminalControls);
+	assert.equal(lines.some((line) => line.includes("git status")), true);
+	assert.equal(lines.some((line) => line.includes("核对发布后的仓库状态")), false);
 });
 
 test("Ctrl+O cycles Full, Compact, Command, and Friendly modes", () => {

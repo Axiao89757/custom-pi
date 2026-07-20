@@ -41,8 +41,8 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 const MAX_CALL_LENGTH = 120;
 const MAX_ERROR_LENGTH = 180;
 const MAX_CTX_TITLE_LENGTH = 120;
-const MAX_DISPLAY_SUMMARY_LENGTH = 40;
-const DISPLAY_SUMMARY_FIELD = "_display_summary";
+const MAX_TOOL_INTENT_LENGTH = 40;
+const TOOL_INTENT_FIELD = "intent";
 const CTX_TITLE_STATUS_KEY = "ctx-title";
 const CTX_TITLE_ENTRY = "custom-pi-ctx-title";
 const AGENT_TIMING_ENTRY = "compact-agent-timing";
@@ -122,7 +122,7 @@ type GenericToolExecutionInstance = {
 type GenericFallbackPrototype = {
 	compactAllToolDurationPatched?: boolean;
 	compactAllToolOutputPatched?: boolean;
-	customPiDisplaySummaryHiddenPatched?: boolean;
+	customPiToolIntentHiddenPatched?: boolean;
 	createCallFallback(this: GenericToolExecutionInstance): Component;
 	createResultFallback(this: GenericToolExecutionInstance): Component | undefined;
 	formatToolExecution(this: GenericToolExecutionInstance): string;
@@ -148,10 +148,8 @@ type MinimalToolDisplayState = {
 	groupGeneration: number;
 	groupsAfterBody: Set<number>;
 	renderMinimal?: (instance: MinimalToolExecutionInstance, width: number) => string[];
-	fallbackSummaries: Map<string, string>;
 	runningTools: Set<MinimalToolExecutionInstance>;
 	spacedGroups: Set<number>;
-	turnIntent?: string;
 };
 
 type MinimalToolExecutionInstance = GenericToolExecutionInstance & {
@@ -375,33 +373,33 @@ type ObjectParameterSchema = {
 	type?: unknown;
 };
 
-function addDisplaySummaryParameter(tool: Pick<ToolDefinition, "parameters">): boolean {
+function addToolIntentParameter(tool: Pick<ToolDefinition, "parameters">): boolean {
 	const schema = tool.parameters as unknown as ObjectParameterSchema;
 	if (schema.type !== "object" || !schema.properties) return false;
 
-	if (!(DISPLAY_SUMMARY_FIELD in schema.properties)) {
+	if (!(TOOL_INTENT_FIELD in schema.properties)) {
 		schema.properties = {
-			[DISPLAY_SUMMARY_FIELD]: Type.Optional(Type.String({
-				minLength: 1,
-				maxLength: MAX_DISPLAY_SUMMARY_LENGTH,
-				description: "Context-aware human-friendly action intent. Always provide this field.",
-			})),
+			[TOOL_INTENT_FIELD]: Type.String({
+				maxLength: MAX_TOOL_INTENT_LENGTH,
+				description: "Human-friendly purpose of this tool call in the full task context. Explain why the step is useful; do not state status, results, Markdown, or raw command syntax.",
+			}),
 			...schema.properties,
 		};
 	}
-	if (schema.required) {
-		schema.required = schema.required.filter((key) => key !== DISPLAY_SUMMARY_FIELD);
-	}
+	schema.required = [
+		TOOL_INTENT_FIELD,
+		...(schema.required ?? []).filter((key) => key !== TOOL_INTENT_FIELD),
+	];
 	return true;
 }
 
-function withDisplaySummarySchema<T extends ToolDefinition>(tool: T): T {
-	addDisplaySummaryParameter(tool);
+function withToolIntentSchema<T extends ToolDefinition>(tool: T): T {
+	addToolIntentParameter(tool);
 	return tool;
 }
 
-function addDisplaySummaryToAllTools(pi: ExtensionAPI): void {
-	for (const tool of pi.getAllTools()) addDisplaySummaryParameter(tool);
+function addToolIntentToAllTools(pi: ExtensionAPI): void {
+	for (const tool of pi.getAllTools()) addToolIntentParameter(tool);
 }
 
 function clipboardImageMimeType(bytes: Buffer): string | undefined {
@@ -483,23 +481,23 @@ function genericErrorComponent(instance: GenericToolExecutionInstance): Componen
 	return error ? new Text(error, 0, 0) : undefined;
 }
 
-function argsWithoutDisplaySummary(args: Record<string, unknown>): Record<string, unknown> {
-	if (!args || !Object.prototype.hasOwnProperty.call(args, DISPLAY_SUMMARY_FIELD)) return args;
+function argsWithoutToolIntent(args: Record<string, unknown>): Record<string, unknown> {
+	if (!args || !Object.prototype.hasOwnProperty.call(args, TOOL_INTENT_FIELD)) return args;
 	const cleanArgs = { ...args };
-	delete cleanArgs[DISPLAY_SUMMARY_FIELD];
+	delete cleanArgs[TOOL_INTENT_FIELD];
 	return cleanArgs;
 }
 
-function installDisplaySummaryHiding(): void {
+function installToolIntentHiding(): void {
 	const prototype = ToolExecutionComponent.prototype as unknown as GenericFallbackPrototype;
-	if (prototype.customPiDisplaySummaryHiddenPatched) return;
+	if (prototype.customPiToolIntentHiddenPatched) return;
 
 	const getCallRenderer = prototype.getCallRenderer;
 	prototype.getCallRenderer = function () {
 		const renderer = getCallRenderer.call(this);
 		if (!renderer) return undefined;
 		return ((args, theme, context) => {
-			const cleanArgs = argsWithoutDisplaySummary(args);
+			const cleanArgs = argsWithoutToolIntent(args);
 			return renderer(cleanArgs, theme, { ...context, args: cleanArgs });
 		}) as CallRenderer;
 	};
@@ -509,7 +507,7 @@ function installDisplaySummaryHiding(): void {
 		const renderer = getResultRenderer.call(this);
 		if (!renderer) return undefined;
 		return ((result, options, theme, context) => {
-			const cleanArgs = argsWithoutDisplaySummary(context.args);
+			const cleanArgs = argsWithoutToolIntent(context.args);
 			return renderer(result, options, theme, { ...context, args: cleanArgs });
 		}) as ResultRenderer;
 	};
@@ -517,7 +515,7 @@ function installDisplaySummaryHiding(): void {
 	const formatToolExecution = prototype.formatToolExecution;
 	prototype.formatToolExecution = function () {
 		const originalArgs = this.args;
-		this.args = argsWithoutDisplaySummary(originalArgs);
+		this.args = argsWithoutToolIntent(originalArgs);
 		try {
 			return formatToolExecution.call(this);
 		} finally {
@@ -525,7 +523,7 @@ function installDisplaySummaryHiding(): void {
 		}
 	};
 
-	Object.defineProperty(prototype, "customPiDisplaySummaryHiddenPatched", {
+	Object.defineProperty(prototype, "customPiToolIntentHiddenPatched", {
 		value: true,
 		configurable: false,
 		enumerable: false,
@@ -709,7 +707,6 @@ function minimalToolDisplayState(): MinimalToolDisplayState {
 	const state = globals[MINIMAL_TOOL_STATE] ??= {
 		collapsedStyle: "minimal",
 		displayMode: "friendly",
-		fallbackSummaries: new Map<string, string>(),
 		groupGeneration: 0,
 		groupsAfterBody: new Set<number>(),
 		runningTools: new Set<MinimalToolExecutionInstance>(),
@@ -717,7 +714,6 @@ function minimalToolDisplayState(): MinimalToolDisplayState {
 	};
 	state.displayMode ??= "friendly";
 	state.collapsedStyle = state.displayMode === "compact" ? "compact" : "minimal";
-	state.fallbackSummaries ??= new Map<string, string>();
 	state.groupGeneration ??= 0;
 	state.groupsAfterBody ??= new Set<number>();
 	state.runningTools ??= new Set<MinimalToolExecutionInstance>();
@@ -731,55 +727,14 @@ function setToolDisplayMode(mode: ToolDisplayMode): void {
 	state.collapsedStyle = mode === "compact" ? "compact" : "minimal";
 }
 
-function intentLines(value: unknown): string[] {
-	if (typeof value !== "string") return [];
-	return value.split("\n")
-		.map((candidate) => candidate.replace(/^[\s#>*_`-]+|[\s*_`]+$/g, "").trim())
-		.filter(Boolean);
-}
-
-function modelAuthoredIntent(value: unknown): string | undefined {
-	const line = intentLines(value).at(-1);
-	return line ? compactText(line, MAX_DISPLAY_SUMMARY_LENGTH) : undefined;
-}
-
-function turnIntent(value: string): string | undefined {
-	const skillBlock = parseSkillBlock(value);
-	const line = intentLines(skillBlock?.userMessage ?? value).at(0);
-	return line ? compactText(line, MAX_DISPLAY_SUMMARY_LENGTH) : undefined;
-}
-
-function ensureToolDisplaySummaries(message: AssistantMessage): void {
+function ensureToolIntentArgument(message: AssistantMessage): void {
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return;
-	const fallbackSummaries = minimalToolDisplayState().fallbackSummaries;
-	let nearestIntent: string | undefined;
-
 	for (const block of message.content) {
-		if (block.type === "thinking") {
-			nearestIntent = modelAuthoredIntent(block.thinking) ?? nearestIntent;
-			continue;
-		}
-		if (block.type === "text") {
-			nearestIntent = modelAuthoredIntent(block.text) ?? nearestIntent;
-			continue;
-		}
 		if (block.type !== "toolCall") continue;
-
-		const toolCall = block as typeof block & {
-			arguments?: Record<string, unknown>;
-			id?: string;
-		};
-		if (!toolCall.arguments || !toolCall.id) continue;
-		const current = toolCall.arguments[DISPLAY_SUMMARY_FIELD];
-		const previousFallback = fallbackSummaries.get(toolCall.id);
-		if (typeof current === "string" && current.trim() && current !== previousFallback) {
-			fallbackSummaries.delete(toolCall.id);
-			continue;
-		}
-
-		const fallback = nearestIntent ?? minimalToolDisplayState().turnIntent ?? "Continue current task";
-		toolCall.arguments[DISPLAY_SUMMARY_FIELD] = fallback;
-		fallbackSummaries.set(toolCall.id, fallback);
+		const toolCall = block as typeof block & { arguments?: Record<string, unknown> };
+		if (!toolCall.arguments || typeof toolCall.arguments[TOOL_INTENT_FIELD] === "string") continue;
+		// Empty intent satisfies local validation while Friendly deliberately falls back to Command.
+		toolCall.arguments[TOOL_INTENT_FIELD] = "";
 	}
 }
 
@@ -895,10 +850,10 @@ function minimalToolSummary(instance: MinimalToolExecutionInstance): MinimalTool
 }
 
 function friendlyToolSummary(instance: MinimalToolExecutionInstance): MinimalToolSummary {
-	const value = instance.args?.[DISPLAY_SUMMARY_FIELD];
-	const summary = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-	return summary
-		? { label: compactText(summary, MAX_DISPLAY_SUMMARY_LENGTH), detail: "" }
+	const value = instance.args?.[TOOL_INTENT_FIELD];
+	const intent = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+	return intent
+		? { label: compactText(intent, MAX_TOOL_INTENT_LENGTH), detail: "" }
 		: minimalToolSummary(instance);
 }
 
@@ -1965,7 +1920,7 @@ function withCompactResult(tool: ToolDefinition): ToolDefinition {
 }
 
 function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
-	const register = (tool: ToolDefinition) => pi.registerTool(withDisplaySummarySchema(tool));
+	const register = (tool: ToolDefinition) => pi.registerTool(withToolIntentSchema(tool));
 
 	const bash = createBashToolDefinition(cwd);
 	const renderExpandedBashCall = bash.renderCall;
@@ -2055,7 +2010,7 @@ function registerCompactTools(pi: ExtensionAPI, cwd: string): void {
 export default function (pi: ExtensionAPI) {
 	installGenericFallbackCompaction();
 	installGenericDuration();
-	installDisplaySummaryHiding();
+	installToolIntentHiding();
 	installMinimalToolRendering();
 	installToolDisplayModeCycling();
 	installMinimalToolGrouping();
@@ -2140,7 +2095,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	pi.registerTool(withDisplaySummarySchema({
+	pi.registerTool(withToolIntentSchema({
 		name: "set_ctx_title",
 		label: "Set Context Title",
 		description: "Set and persist the stable parent context title shown in Pi's footer and mirror it to the current session display name. Follow the active project's instructions when choosing the title. Omit title to clear both values.",
@@ -2197,13 +2152,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		addDisplaySummaryToAllTools(pi);
-		minimalToolDisplayState().turnIntent = turnIntent(event.prompt);
+		addToolIntentToAllTools(pi);
 		agentStartedAt ??= pendingAgentStartedAt ?? performance.now();
 		pendingAgentStartedAt = undefined;
 		startWorkingTimer(ctx);
 		return {
-			systemPrompt: `${event.systemPrompt}\n\nFor every tool call, set ${DISPLAY_SUMMARY_FIELD} to a concise, human-friendly action intent in the user's language (maximum ${MAX_DISPLAY_SUMMARY_LENGTH} characters). Use the full task and conversation context to explain why this step is useful; do not merely translate the tool name or paraphrase the raw command. Do not state status, completion, results, Markdown, or raw command syntax. When a tool call follows a reasoning or action heading, keep that heading in the user's language and make it describe the step's purpose so the UI can use it as a fallback.`,
+			systemPrompt: `${event.systemPrompt}\n\nEvery tool call must provide ${TOOL_INTENT_FIELD}: a concise, human-friendly purpose in the user's language (maximum ${MAX_TOOL_INTENT_LENGTH} characters). Use the full task and conversation context to explain why the step is useful; do not merely translate the tool name or paraphrase the raw command. Do not state status, completion, results, Markdown, or raw command syntax.`,
 		};
 	});
 
@@ -2234,10 +2188,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		const toolState = minimalToolDisplayState();
 		toolState.groupGeneration = 0;
-		toolState.fallbackSummaries.clear();
 		toolState.groupsAfterBody.clear();
 		toolState.spacedGroups.clear();
-		toolState.turnIntent = undefined;
 		const activeTheme = ctx.ui.theme;
 		footerTimerState().getTheme = () => activeTheme;
 		userMessageTimeState().getTheme = () => activeTheme;
@@ -2266,7 +2218,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		registerCompactTools(pi, ctx.cwd);
-		addDisplaySummaryToAllTools(pi);
+		addToolIntentToAllTools(pi);
 		ctx.ui.setToolsExpanded(toolState.displayMode === "full");
 	});
 
@@ -2275,11 +2227,11 @@ export default function (pi: ExtensionAPI) {
 		const messages = event.messages.map((message) => {
 			if (message.role !== "assistant") return message;
 			const content = message.content.map((block) => {
-				if (block.type !== "toolCall" || !Object.prototype.hasOwnProperty.call(block.arguments, DISPLAY_SUMMARY_FIELD)) {
+				if (block.type !== "toolCall" || !Object.prototype.hasOwnProperty.call(block.arguments, TOOL_INTENT_FIELD)) {
 					return block;
 				}
 				changed = true;
-				return { ...block, arguments: argsWithoutDisplaySummary(block.arguments) };
+				return { ...block, arguments: argsWithoutToolIntent(block.arguments) };
 			});
 			return content.some((block, index) => block !== message.content[index])
 				? { ...message, content }
@@ -2289,7 +2241,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", (event) => {
-		delete event.input[DISPLAY_SUMMARY_FIELD];
+		delete event.input[TOOL_INTENT_FIELD];
 	});
 
 	pi.on("tool_execution_start", (_event, ctx) => {
@@ -2298,9 +2250,6 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.ui.getToolsExpanded() !== shouldExpand) ctx.ui.setToolsExpanded(shouldExpand);
 	});
 
-	pi.on("tool_execution_end", (event) => {
-		minimalToolDisplayState().fallbackSummaries.delete(event.toolCallId);
-	});
 
 	pi.on("message_start", (event) => {
 		if (event.message.role === "assistant") beginMinimalToolGroup(event.message as AssistantMessage);
@@ -2308,14 +2257,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_update", (event) => {
 		const message = event.message as AssistantMessage;
-		ensureToolDisplaySummaries(message);
+		ensureToolIntentArgument(message);
 		cleanThinkingBlocks(message);
 		if (message.role === "assistant") markMinimalToolGroupAfterBody(message);
 	});
 
 	pi.on("message_end", (event) => {
 		const message = event.message as AssistantMessage;
-		ensureToolDisplaySummaries(message);
+		ensureToolIntentArgument(message);
 		if (message.role === "assistant") markMinimalToolGroupAfterBody(message);
 		if (!cleanThinkingBlocks(message)) return;
 		return { message: event.message };
