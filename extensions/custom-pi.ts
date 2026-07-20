@@ -978,7 +978,7 @@ function formatUserTimestamp(value: number | string | undefined): string | undef
 	if (!Number.isFinite(date.getTime())) return undefined;
 	const hours = String(date.getHours()).padStart(2, "0");
 	const minutes = String(date.getMinutes()).padStart(2, "0");
-	return `${date.getMonth() + 1}.${date.getDate()} ${hours}:${minutes}`;
+	return `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()} ${hours}:${minutes}`;
 }
 
 function userMessageTimeState(): UserMessageTimeState {
@@ -1102,7 +1102,7 @@ function renderRightAlignedUserMessage(instance: UserMessageInstance, width: num
 	if (!messageContent) return undefined;
 
 	const timestamp = state.formatTimestamp?.(instance.customPiTimestamp);
-	const maxBubbleWidth = Math.max(3, Math.min(width, Math.floor(width * 0.8)));
+	const maxBubbleWidth = Math.max(3, Math.min(width, Math.floor(width * 0.9)));
 	const maxContentWidth = Math.max(1, maxBubbleWidth - 2);
 	const probeLines = messageContent.render(maxContentWidth);
 	const contentWidth = Math.max(0, ...probeLines.map((line) => visibleWidth(line.replace(ANSI_SGR, "").trimEnd())));
