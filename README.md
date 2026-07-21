@@ -4,10 +4,10 @@ Personal [Pi](https://pi.dev) extension for a compact, work-focused terminal UI.
 
 ## Features
 
-- Full, compact, command, and context-aware Friendly tool-call rendering
-- Required `intent` argument for model-authored Friendly labels
-- Missing intent falls back directly to Command without another model request
-- Intent metadata stripped before execution and later model context
+- Full, compact, command, and asynchronously generated Friendly tool-call rendering
+- Friendly summaries run in a configurable sidecar model without changing the main Agent tools
+- Sidecar timeout or failure keeps the existing Command display
+- Agent-only `set_riff_summary_model` configuration; no user command or settings screen
 - Tool and agent timing
 - Right-aligned user messages with local timestamps
 - Clipboard image attachment, thumbnails, and expanded image display

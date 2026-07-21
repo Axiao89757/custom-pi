@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import { tmpdir } from "node:os";
+import test, { after } from "node:test";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const extensionPath = join(repositoryRoot, "extensions", "pi-riff.ts");
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+const testAgentDir = mkdtempSync(join(tmpdir(), "pi-riff-test-agent-"));
+process.env.PI_CODING_AGENT_DIR = testAgentDir;
+after(() => {
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	rmSync(testAgentDir, { recursive: true, force: true });
+});
 const loaderRelativePath = join("dist", "core", "extensions", "loader.js");
 const piExecutable = realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim());
 let piRoot = dirname(dirname(piExecutable));
@@ -96,8 +105,8 @@ test("context title writes stay behind the agent tool", async () => {
 	assert.equal(customPiExtension.commands.has("workspace-context"), false);
 	assert.equal(customPiExtension.tools.has("set_workspace_context"), false);
 	assert.equal("title" in tool.definition.parameters.properties, true);
-	assert.equal("intent" in tool.definition.parameters.properties, true);
-	assert.equal((tool.definition.parameters.required ?? []).includes("intent"), true);
+	assert.equal("intent" in tool.definition.parameters.properties, false);
+	assert.equal((tool.definition.parameters.required ?? []).includes("intent"), false);
 	assert.equal("status" in tool.definition.parameters.properties, false);
 	assert.equal(command.description, "Show or clear the stable parent context title and session display name");
 	assert.match(tool.definition.description, /active project's instructions/);
@@ -115,7 +124,44 @@ test("context title writes stay behind the agent tool", async () => {
 	]);
 });
 
-test("reload removes the legacy display summary field from tool schemas", () => {
+test("the Agent configures the sidecar model without a user command", async () => {
+	const tool = customPiExtension.tools.get("set_riff_summary_model");
+	assert.ok(tool);
+	assert.equal(customPiExtension.commands.has("riff-model"), false);
+	assert.deepEqual(Object.keys(tool.definition.parameters.properties), ["model"]);
+	assert.equal("intent" in tool.definition.parameters.properties, false);
+
+	const configuredModel = { provider: "test-provider", id: "fast-model" };
+	const ctx = {
+		model: { provider: "current-provider", id: "current-model" },
+		modelRegistry: {
+			find: (provider, id) => provider === configuredModel.provider && id === configuredModel.id
+				? configuredModel
+				: undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+		},
+	};
+	const result = await tool.definition.execute(
+		"configure-summary-model",
+		{ model: "test-provider/fast-model" },
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.match(result.content[0].text, /test-provider\/fast-model/);
+	assert.deepEqual(
+		JSON.parse(readFileSync(join(testAgentDir, "pi-riff.json"), "utf8")),
+		{ summaryModel: "test-provider/fast-model" },
+	);
+
+	await tool.definition.execute("disable-summary-model", { model: "off" }, undefined, undefined, ctx);
+	assert.deepEqual(
+		JSON.parse(readFileSync(join(testAgentDir, "pi-riff.json"), "utf8")),
+		{ summaryModel: "off" },
+	);
+});
+
+test("reload removes legacy display metadata without adding tool parameters", () => {
 	const script = `
 		import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 		import { tmpdir } from "node:os";
@@ -158,7 +204,6 @@ test("reload removes the legacy display summary field from tool schemas", () => 
 				hasLegacyRequired: tool.parameters.required.includes("_display_summary"),
 				hasIntentProperty: "intent" in tool.parameters.properties,
 				hasIntentRequired: tool.parameters.required.includes("intent"),
-				intentMinLength: tool.parameters.properties.intent.minLength ?? null,
 			}));
 		} finally {
 			session.dispose();
@@ -173,13 +218,12 @@ test("reload removes the legacy display summary field from tool schemas", () => 
 		extensionErrors: 0,
 		hasLegacyProperty: false,
 		hasLegacyRequired: false,
-		hasIntentProperty: true,
-		hasIntentRequired: true,
-		intentMinLength: 1,
+		hasIntentProperty: false,
+		hasIntentRequired: false,
 	});
 });
 
-test("Friendly tool summaries are display-only and all four modes are selectable", async () => {
+test("Friendly sidecar summaries are display-only and all four modes are selectable", async () => {
 	const toolCallHandlers = customPiExtension.handlers.get("tool_call") ?? [];
 	assert.equal(toolCallHandlers.length, 1);
 	const toolCall = {
@@ -219,10 +263,13 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 	};
 	await toolStyle.handler("friendly", ctx);
 
+	const toolState = globalThis[Symbol.for("pi.custom-pi.minimal-tool-state")];
+	assert.ok(toolState);
+	toolState.toolSummaries.set("probe-call", "检查后台会话状态");
 	const component = new ToolExecutionComponent(
 		"probe",
 		"probe-call",
-		{ query: "raw query", intent: "检查后台会话状态" },
+		{ query: "raw query" },
 		{},
 		undefined,
 		{ requestRender() {} },
@@ -259,30 +306,24 @@ test("Friendly tool summaries are display-only and all four modes are selectable
 		"Tool display mode: full",
 	]);
 	await toolStyle.handler("friendly", ctx);
+	toolState.toolSummaries.delete("probe-call");
 });
 
-test("missing tool intent waits for the final message before Command fallback", async () => {
+test("main-agent tool messages are not given Friendly metadata", async () => {
+	assert.equal((customPiExtension.handlers.get("before_agent_start") ?? []).length, 1);
 	const message = {
 		role: "assistant",
-		content: [
-			{ type: "thinking", thinking: "核对发布后的仓库状态" },
-			{ type: "toolCall", id: "missing-intent", name: "bash", arguments: { command: "git status" } },
-		],
+		content: [{ type: "toolCall", id: "missing-summary", name: "bash", arguments: { command: "git status" } }],
 	};
-	for (const handler of customPiExtension.handlers.get("message_update") ?? []) {
-		await handler({ type: "message_update", message }, {});
-	}
-	assert.equal("intent" in message.content[1].arguments, false);
-
 	for (const handler of customPiExtension.handlers.get("message_end") ?? []) {
-		await handler({ type: "message_end", message }, {});
+		await handler({ type: "message_end", message }, { model: undefined });
 	}
-	assert.equal(message.content[1].arguments.intent, " ");
+	assert.deepEqual(message.content[0].arguments, { command: "git status" });
 
 	const component = new ToolExecutionComponent(
 		"bash",
-		"missing-intent",
-		message.content[1].arguments,
+		"missing-summary",
+		message.content[0].arguments,
 		{},
 		undefined,
 		{ requestRender() {} },
@@ -291,7 +332,6 @@ test("missing tool intent waits for the final message before Command fallback", 
 	component.updateResult({ content: [], details: undefined, isError: false });
 	const lines = component.render(100).map(stripTerminalControls);
 	assert.equal(lines.some((line) => line.includes("git status")), true);
-	assert.equal(lines.some((line) => line.includes("核对发布后的仓库状态")), false);
 });
 
 test("Ctrl+O cycles Full, Compact, Command, and Friendly modes", () => {
