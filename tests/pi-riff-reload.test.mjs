@@ -124,41 +124,13 @@ test("context title writes stay behind the agent tool", async () => {
 	]);
 });
 
-test("the Agent configures the sidecar model without a user command", async () => {
-	const tool = customPiExtension.tools.get("set_riff_summary_model");
-	assert.ok(tool);
+test("Friendly labels have no model configuration or sidecar runtime", () => {
+	assert.equal(customPiExtension.tools.has("set_riff_summary_model"), false);
 	assert.equal(customPiExtension.commands.has("riff-model"), false);
-	assert.deepEqual(Object.keys(tool.definition.parameters.properties), ["model"]);
-	assert.equal("intent" in tool.definition.parameters.properties, false);
-
-	const configuredModel = { provider: "test-provider", id: "fast-model" };
-	const ctx = {
-		model: { provider: "current-provider", id: "current-model" },
-		modelRegistry: {
-			find: (provider, id) => provider === configuredModel.provider && id === configuredModel.id
-				? configuredModel
-				: undefined,
-			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
-		},
-	};
-	const result = await tool.definition.execute(
-		"configure-summary-model",
-		{ model: "test-provider/fast-model" },
-		undefined,
-		undefined,
-		ctx,
-	);
-	assert.match(result.content[0].text, /test-provider\/fast-model/);
-	assert.deepEqual(
-		JSON.parse(readFileSync(join(testAgentDir, "pi-riff.json"), "utf8")),
-		{ summaryModel: "test-provider/fast-model" },
-	);
-
-	await tool.definition.execute("disable-summary-model", { model: "off" }, undefined, undefined, ctx);
-	assert.deepEqual(
-		JSON.parse(readFileSync(join(testAgentDir, "pi-riff.json"), "utf8")),
-		{ summaryModel: "off" },
-	);
+	const source = readFileSync(extensionPath, "utf8");
+	assert.doesNotMatch(source, /completeSimple/);
+	assert.doesNotMatch(source, /pi-riff-tool-summary/);
+	assert.doesNotMatch(source, /summaryModel/);
 });
 
 test("reload removes legacy display metadata without adding tool parameters", () => {
@@ -223,7 +195,7 @@ test("reload removes legacy display metadata without adding tool parameters", ()
 	});
 });
 
-test("Friendly sidecar summaries are display-only and all four modes are selectable", async () => {
+test("Friendly labels are local, deterministic, and all four modes are selectable", async () => {
 	const toolCallHandlers = customPiExtension.handlers.get("tool_call") ?? [];
 	assert.equal(toolCallHandlers.length, 1);
 	const toolCall = {
@@ -263,13 +235,10 @@ test("Friendly sidecar summaries are display-only and all four modes are selecta
 	};
 	await toolStyle.handler("friendly", ctx);
 
-	const toolState = globalThis[Symbol.for("pi.custom-pi.minimal-tool-state")];
-	assert.ok(toolState);
-	toolState.toolSummaries.set("probe-call", "检查后台会话状态");
 	const component = new ToolExecutionComponent(
-		"probe",
+		"bash",
 		"probe-call",
-		{ query: "raw query" },
+		{ command: "git status --short" },
 		{},
 		undefined,
 		{ requestRender() {} },
@@ -277,8 +246,8 @@ test("Friendly sidecar summaries are display-only and all four modes are selecta
 	);
 	component.updateResult({ content: [], details: undefined, isError: false });
 	const friendlyLines = component.render(100).map(stripTerminalControls);
-	assert.equal(friendlyLines.some((line) => line.includes("检查后台会话状态")), true);
-	assert.equal(friendlyLines.some((line) => line.includes("raw query")), false);
+	assert.equal(friendlyLines.some((line) => line.includes("检查仓库状态")), true);
+	assert.equal(friendlyLines.some((line) => line.includes("git status")), false);
 
 	component.updateResult({
 		content: [{ type: "text", text: "probe failed" }],
@@ -286,13 +255,13 @@ test("Friendly sidecar summaries are display-only and all four modes are selecta
 		isError: true,
 	});
 	const failedLines = component.render(100).map(stripTerminalControls);
-	assert.equal(failedLines.some((line) => line.includes("检查后台会话状态")), true);
+	assert.equal(failedLines.some((line) => line.includes("检查仓库状态")), true);
 	assert.equal(failedLines.some((line) => line.includes("probe failed")), true);
 
 	await toolStyle.handler("command", ctx);
 	const commandLines = component.render(100).map(stripTerminalControls);
-	assert.equal(commandLines.some((line) => line.includes("raw query")), true);
-	assert.equal(commandLines.some((line) => line.includes("检查后台会话状态")), false);
+	assert.equal(commandLines.some((line) => line.includes("git status --short")), true);
+	assert.equal(commandLines.some((line) => line.includes("检查仓库状态")), false);
 
 	await toolStyle.handler("full", ctx);
 	component.setExpanded(true);
@@ -306,14 +275,19 @@ test("Friendly sidecar summaries are display-only and all four modes are selecta
 		"Tool display mode: full",
 	]);
 	await toolStyle.handler("friendly", ctx);
-	toolState.toolSummaries.delete("probe-call");
 });
 
-test("Friendly sidecar summarizes tool data without forwarding the user task", () => {
-	const source = readFileSync(extensionPath, "utf8");
-	assert.match(source, /TOOL CALL DATA ONLY/);
-	assert.doesNotMatch(source, /TASK DATA/);
-	assert.doesNotMatch(source, /summaryTask/);
+test("Friendly labels describe file operations without model output", () => {
+	const cases = [
+		{ tool: "read", args: { path: "/tmp/project/package.json" }, expected: "读取 package.json" },
+		{ tool: "edit", args: { path: "/tmp/project/README.md", edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }] }, expected: "编辑 README.md（2 处）" },
+		{ tool: "write", args: { path: "/tmp/project/config.json", content: "{}" }, expected: "写入 config.json" },
+	];
+	for (const [index, item] of cases.entries()) {
+		const component = new ToolExecutionComponent(item.tool, `local-${index}`, item.args, {}, undefined, { requestRender() {} }, "/tmp/project");
+		component.updateResult({ content: [], details: undefined, isError: false });
+		assert.equal(component.render(100).map(stripTerminalControls).some((line) => line.includes(item.expected)), true);
+	}
 });
 
 test("main-agent tool messages are not given Friendly metadata", async () => {
@@ -338,7 +312,8 @@ test("main-agent tool messages are not given Friendly metadata", async () => {
 	);
 	component.updateResult({ content: [], details: undefined, isError: false });
 	const lines = component.render(100).map(stripTerminalControls);
-	assert.equal(lines.some((line) => line.includes("git status")), true);
+	assert.equal(lines.some((line) => line.includes("检查仓库状态")), true);
+	assert.equal(lines.some((line) => line.includes("git status")), false);
 });
 
 test("Ctrl+O cycles Full, Compact, Command, and Friendly modes", () => {

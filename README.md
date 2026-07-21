@@ -4,10 +4,9 @@ Personal [Pi](https://pi.dev) extension for a compact, work-focused terminal UI.
 
 ## Features
 
-- Full, compact, command, and asynchronously generated Friendly tool-call rendering
-- Friendly summaries run in a configurable sidecar model without changing the main Agent tools
-- Sidecar timeout or failure keeps the existing Command display
-- Agent-only `set_riff_summary_model` configuration; no user command or settings screen
+- Full, compact, command, and deterministic Friendly tool-call rendering
+- Friendly labels are generated locally from tool names and arguments
+- No additional model requests, prompt changes, tool schema changes, or display metadata
 - Tool and agent timing
 - Right-aligned user messages with local timestamps
 - Clipboard image attachment, thumbnails, and expanded image display
