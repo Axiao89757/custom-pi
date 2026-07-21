@@ -2260,7 +2260,7 @@ export default function (pi: ExtensionAPI) {
 						headers: resolved.auth.headers,
 						env: resolved.auth.env,
 						signal: controller.signal,
-						reasoning: undefined,
+						reasoning: "off" as never,
 						maxTokens: 256,
 						maxRetries: 0,
 						timeoutMs: SUMMARY_TIMEOUT_MS,
