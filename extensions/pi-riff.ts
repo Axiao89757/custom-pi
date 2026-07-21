@@ -47,8 +47,9 @@ const MAX_FRIENDLY_SUMMARY_LENGTH = 40;
 const LEGACY_DISPLAY_SUMMARY_FIELD = "_display_summary";
 const SUMMARY_CONFIG_FILE = "pi-riff.json";
 const DEFAULT_SUMMARY_MODEL = "current";
+const MAX_SUMMARY_TASK_LENGTH = 800;
+const MAX_SUMMARY_PAYLOAD_LENGTH = 4000;
 const SUMMARY_TIMEOUT_MS = 5000;
-const MAX_SUMMARY_TASK_LENGTH = 2000;
 const TOOL_SUMMARY_ENTRY = "pi-riff-tool-summary";
 const CTX_TITLE_STATUS_KEY = "ctx-title";
 const CTX_TITLE_ENTRY = "custom-pi-ctx-title";
@@ -440,22 +441,48 @@ function writeSummaryModelConfig(summaryModel: string): void {
 	renameSync(temporaryPath, path);
 }
 
-function sanitizeSummaryValue(value: unknown, depth = 0): unknown {
-	if (depth > 3) return "[truncated]";
-	if (typeof value === "string") return compactText(value.replace(/\s+/g, " "), 600);
-	if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-	if (Array.isArray(value)) return value.slice(0, 8).map((item) => sanitizeSummaryValue(item, depth + 1));
-	if (!value || typeof value !== "object") return String(value);
+function redactSummaryText(value: unknown, maxLength: number): string {
+	if (typeof value !== "string") return "";
+	return compactText(value.replace(/\s+/g, " ")
+		.replace(/(token|secret|password|credential|authorization|cookie|api[-_]?key)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]"), maxLength);
+}
 
-	const result: Record<string, unknown> = {};
-	for (const [key, item] of Object.entries(value)) {
-		if (/(token|secret|password|credential|authorization|cookie|api[-_]?key)/i.test(key)) {
-			result[key] = "[redacted]";
-		} else {
-			result[key] = sanitizeSummaryValue(item, depth + 1);
+function summaryPath(args: Record<string, unknown>): string {
+	return redactSummaryText(args.path ?? args.file_path, 240);
+}
+
+function summaryToolArguments(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+	switch (toolName) {
+		case "bash":
+			return { command: redactSummaryText(args.command, 320) };
+		case "read":
+			return {
+				path: summaryPath(args),
+				offset: typeof args.offset === "number" ? args.offset : undefined,
+				limit: typeof args.limit === "number" ? args.limit : undefined,
+			};
+		case "edit": {
+			const edits = Array.isArray(args.edits) ? args.edits : [];
+			return {
+				path: summaryPath(args),
+				editCount: edits.length,
+				oldTextBytes: edits.reduce((total, edit) => total + (typeof edit?.oldText === "string" ? Buffer.byteLength(edit.oldText, "utf8") : 0), 0),
+				newTextBytes: edits.reduce((total, edit) => total + (typeof edit?.newText === "string" ? Buffer.byteLength(edit.newText, "utf8") : 0), 0),
+			};
 		}
+		case "write":
+			return {
+				path: summaryPath(args),
+				contentBytes: typeof args.content === "string" ? Buffer.byteLength(args.content, "utf8") : 0,
+			};
+		case "grep":
+		case "find":
+			return { pattern: redactSummaryText(args.pattern, 180), path: summaryPath(args) };
+		case "ls":
+			return { path: summaryPath(args) };
+		default:
+			return { args: redactSummaryText(JSON.stringify(args), 320) };
 	}
-	return result;
 }
 
 function assistantText(message: { content?: Array<{ type?: string; text?: string }> }): string {
@@ -2190,14 +2217,22 @@ export default function (pi: ExtensionAPI) {
 
 	const summarizeToolBatch = (message: AssistantMessage, ctx: ExtensionContext) => {
 		if (minimalToolDisplayState().displayMode !== "friendly" || summaryModel === "off") return;
-		const calls = message.content
+		const rawCalls = message.content
 			.filter((block) => block.type === "toolCall")
 			.map((block) => ({
 				id: String(block.id ?? ""),
 				name: String(block.name ?? ""),
-				args: sanitizeSummaryValue(block.arguments ?? {}),
+				args: summaryToolArguments(String(block.name ?? ""), (block.arguments ?? {}) as Record<string, unknown>),
 			}))
 			.filter((call) => call.id && call.name !== "set_riff_summary_model");
+		const calls: typeof rawCalls = [];
+		let callsLength = 2;
+		for (const call of rawCalls) {
+			const encodedLength = JSON.stringify(call).length + (calls.length > 0 ? 1 : 0);
+			if (calls.length > 0 && callsLength + encodedLength > MAX_SUMMARY_PAYLOAD_LENGTH) break;
+			calls.push(call);
+			callsLength += encodedLength;
+		}
 		if (calls.length === 0) return;
 
 		const generation = summaryGeneration;
