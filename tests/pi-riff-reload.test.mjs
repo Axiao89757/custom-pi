@@ -309,6 +309,13 @@ test("Friendly sidecar summaries are display-only and all four modes are selecta
 	toolState.toolSummaries.delete("probe-call");
 });
 
+test("Friendly sidecar summarizes tool data without forwarding the user task", () => {
+	const source = readFileSync(extensionPath, "utf8");
+	assert.match(source, /TOOL CALL DATA ONLY/);
+	assert.doesNotMatch(source, /TASK DATA/);
+	assert.doesNotMatch(source, /summaryTask/);
+});
+
 test("main-agent tool messages are not given Friendly metadata", async () => {
 	assert.equal((customPiExtension.handlers.get("before_agent_start") ?? []).length, 1);
 	const message = {
