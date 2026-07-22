@@ -824,42 +824,177 @@ function shellTokenRanges(command: string, startAt = 0): Array<[number, number]>
 	return ranges;
 }
 
-function bashSemanticRanges(command: string): Array<[number, number]> {
-	const executableRange = firstShellCommandRange(command);
-	if (!executableRange) return [];
-	const executable = basename(command.slice(executableRange[0], executableRange[1]));
-	const tokens = shellTokenRanges(command, executableRange[0]);
-	const executableIndex = tokens.findIndex(([start, end]) => start === executableRange[0] && end === executableRange[1]);
-	const argumentsTokens = executableIndex < 0 ? [] : tokens.slice(executableIndex + 1);
-	if (executable === "git") {
-		for (let index = 0; index < argumentsTokens.length; index += 1) {
-			const token = command.slice(...argumentsTokens[index]);
-			if (token === "-C" || token === "-c" || token === "--git-dir" || token === "--work-tree" || token === "--config-env") {
-				index += 1;
-				continue;
-			}
-			if (!token.startsWith("-")) return [executableRange, argumentsTokens[index]];
-		}
-		return [executableRange];
-	}
-	if (executable !== "rg") return [executableRange];
+type IndexedTokenRange = {
+	index: number;
+	range: [number, number];
+};
 
-	const valueOptions = new Set(["-e", "--regexp", "-g", "--glob", "-f", "--file", "-m", "--max-count", "-A", "-B", "-C", "--context"]);
-	for (let index = 0; index < argumentsTokens.length; index += 1) {
-		const range = argumentsTokens[index];
-		const token = command.slice(...range);
-		if (token === "--") return index + 1 < argumentsTokens.length ? [executableRange, argumentsTokens[index + 1]] : [executableRange];
-		if (token === "-e" || token === "--regexp") {
-			return index + 1 < argumentsTokens.length ? [executableRange, argumentsTokens[index + 1]] : [executableRange];
-		}
-		if (token.startsWith("--regexp=")) return [executableRange, [range[0] + "--regexp=".length, range[1]]];
+function tokenText(command: string, range: [number, number]): string {
+	return command.slice(range[0], range[1]);
+}
+
+function unquotedToken(value: string): string {
+	const first = value[0];
+	return value.length >= 2 && (first === "'" || first === '"') && value.at(-1) === first
+		? value.slice(1, -1)
+		: value;
+}
+
+function firstPositionalToken(
+	command: string,
+	tokens: Array<[number, number]>,
+	valueOptions: ReadonlySet<string>,
+	startAt = 0,
+): IndexedTokenRange | undefined {
+	for (let index = startAt; index < tokens.length; index += 1) {
+		const token = tokenText(command, tokens[index]);
+		if (token === "--") return index + 1 < tokens.length ? { index: index + 1, range: tokens[index + 1] } : undefined;
 		if (valueOptions.has(token)) {
 			index += 1;
 			continue;
 		}
-		if (token.startsWith("-")) continue;
-		return [executableRange, range];
+		if (token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+		return { index, range: tokens[index] };
 	}
+	return undefined;
+}
+
+function rangeAfterOption(command: string, tokens: Array<[number, number]>, options: ReadonlySet<string>): [number, number] | undefined {
+	for (let index = 0; index < tokens.length; index += 1) {
+		if (options.has(tokenText(command, tokens[index]))) return tokens[index + 1];
+	}
+	return undefined;
+}
+
+function lastPositionalRange(command: string, tokens: Array<[number, number]>, valueOptions: ReadonlySet<string>): [number, number] | undefined {
+	let last: [number, number] | undefined;
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokenText(command, tokens[index]);
+		if (valueOptions.has(token)) {
+			index += 1;
+			continue;
+		}
+		if (!token.startsWith("-")) last = tokens[index];
+	}
+	return last;
+}
+
+function withSemanticRange(executableRange: [number, number], semanticRange?: [number, number]): Array<[number, number]> {
+	return semanticRange ? [executableRange, semanticRange] : [executableRange];
+}
+
+function bashSemanticRanges(command: string): Array<[number, number]> {
+	const executableRange = firstShellCommandRange(command);
+	if (!executableRange) return [];
+	const executable = basename(tokenText(command, executableRange));
+	const tokens = shellTokenRanges(command, executableRange[0]);
+	const executableIndex = tokens.findIndex(([start, end]) => start === executableRange[0] && end === executableRange[1]);
+	const args = executableIndex < 0 ? [] : tokens.slice(executableIndex + 1);
+
+	if (executable === "git") {
+		const semantic = firstPositionalToken(command, args, new Set(["-C", "-c", "--git-dir", "--work-tree", "--config-env"]));
+		return withSemanticRange(executableRange, semantic?.range);
+	}
+
+	if (executable === "rg") {
+		const patternAfterOption = rangeAfterOption(command, args, new Set(["-e", "--regexp"]));
+		if (patternAfterOption) return withSemanticRange(executableRange, patternAfterOption);
+		for (const range of args) {
+			const token = tokenText(command, range);
+			if (token.startsWith("--regexp=")) return withSemanticRange(executableRange, [range[0] + "--regexp=".length, range[1]]);
+			if (token.startsWith("-e") && token.length > 2) return withSemanticRange(executableRange, [range[0] + 2, range[1]]);
+		}
+		const semantic = firstPositionalToken(command, args, new Set(["-g", "--glob", "-f", "--file", "-m", "--max-count", "-A", "-B", "-C", "--context"]));
+		return withSemanticRange(executableRange, semantic?.range);
+	}
+
+	if (executable === "npm") {
+		const action = firstPositionalToken(command, args, new Set(["--prefix", "--cache", "--workspace", "-w"]));
+		if (!action) return [executableRange];
+		const actionText = unquotedToken(tokenText(command, action.range));
+		const script = actionText === "run" ? firstPositionalToken(command, args, new Set(), action.index + 1) : undefined;
+		return withSemanticRange(executableRange, script?.range ?? action.range);
+	}
+
+	if (executable === "node") {
+		const preferredMode = args.find((range) => /^(?:--test(?:=.*)?|--check|-e|--eval|-p|--print)$/.test(tokenText(command, range)));
+		if (preferredMode) return withSemanticRange(executableRange, preferredMode);
+		const script = firstPositionalToken(command, args, new Set(["--input-type", "--require", "-r", "--loader", "--import", "--conditions"]));
+		if (script && !/^(?:-|<|<<)/.test(tokenText(command, script.range))) return withSemanticRange(executableRange, script.range);
+		const inputType = args.find((range) => tokenText(command, range).startsWith("--input-type"));
+		return withSemanticRange(executableRange, inputType);
+	}
+
+	if (executable === "playwright-cli") {
+		const action = firstPositionalToken(command, args, new Set(["-s", "--session", "--timeout"]));
+		return withSemanticRange(executableRange, action?.range);
+	}
+
+	if (executable === "make") {
+		const target = firstPositionalToken(command, args, new Set(["-C", "-f", "--file", "--directory"]));
+		return withSemanticRange(executableRange, target?.range);
+	}
+
+	if (executable === "find") {
+		const pattern = rangeAfterOption(command, args, new Set(["-name", "-iname", "-path", "-ipath", "-regex", "-iregex"]));
+		return withSemanticRange(executableRange, pattern);
+	}
+
+	if (executable === "jq") {
+		const filterFile = rangeAfterOption(command, args, new Set(["-f", "--from-file"]));
+		if (filterFile) return withSemanticRange(executableRange, filterFile);
+		for (let index = 0; index < args.length; index += 1) {
+			const token = tokenText(command, args[index]);
+			if (token === "--arg" || token === "--argjson" || token === "--slurpfile" || token === "--rawfile" || token === "--argfile") {
+				index += 2;
+				continue;
+			}
+			if (token === "-L") {
+				index += 1;
+				continue;
+			}
+			if (token === "--") return index + 1 < args.length ? withSemanticRange(executableRange, args[index + 1]) : [executableRange];
+			if (!token.startsWith("-")) return withSemanticRange(executableRange, args[index]);
+		}
+		return [executableRange];
+	}
+
+	if (executable === "curl") {
+		const url = args.find((range) => /^https?:\/\//.test(unquotedToken(tokenText(command, range))));
+		return withSemanticRange(executableRange, url);
+	}
+
+	if (executable === "python" || executable === "python3") {
+		const module = rangeAfterOption(command, args, new Set(["-m"]));
+		if (module) return withSemanticRange(executableRange, module);
+		const mode = args.find((range) => tokenText(command, range) === "-c");
+		if (mode) return withSemanticRange(executableRange, mode);
+		const script = firstPositionalToken(command, args, new Set(["-W", "-X"]));
+		return withSemanticRange(executableRange, script?.range);
+	}
+
+	if (executable === "pi") {
+		const priority = ["--list-models", "--version", "--help", "install", "remove", "update", "list", "config"];
+		const action = priority
+			.map((value) => args.find((range) => tokenText(command, range) === value))
+			.find(Boolean)
+			?? args.find((range) => tokenText(command, range) === "--mode");
+		return withSemanticRange(executableRange, action);
+	}
+
+	if (executable === "gh" || executable === "docker" || executable === "uv") {
+		const action = firstPositionalToken(command, args, new Set(["--repo", "-R", "--host"]));
+		return withSemanticRange(executableRange, action?.range);
+	}
+
+	if (executable === "shasum" || executable === "sha256sum") {
+		return withSemanticRange(executableRange, lastPositionalRange(command, args, new Set(["-a"])));
+	}
+
+	if (executable === "cp" || executable === "mv" || executable === "rm" || executable === "mkdir") {
+		return withSemanticRange(executableRange, lastPositionalRange(command, args, new Set()));
+	}
+
 	return [executableRange];
 }
 

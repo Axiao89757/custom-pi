@@ -338,6 +338,37 @@ test("Command uses relative paths, preserves both ends, and right-aligns facts",
 	await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
 });
 
+test("Command highlights one semantic token for frequent shell tools", async () => {
+	const toolStyle = customPiExtension.commands.get("tool-style");
+	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });
+	const cases = [
+		{ command: "npm run test", semantic: "test" },
+		{ command: "npm --prefix . pack", semantic: "pack" },
+		{ command: "node --experimental-strip-types --check src/index.ts", semantic: "--check" },
+		{ command: "node scripts/check.mjs", semantic: "scripts/check.mjs" },
+		{ command: "playwright-cli -s=pi snapshot", semantic: "snapshot" },
+		{ command: "make service-status", semantic: "service-status" },
+		{ command: "find . -name '*.ts'", semantic: "'*.ts'" },
+		{ command: "jq -r '.name' package.json", semantic: "'.name'" },
+		{ command: "curl -fsSL https://example.com/archive", semantic: "https://example.com/archive" },
+		{ command: "pi --no-extensions --list-models", semantic: "--list-models" },
+		{ command: "gh repo view", semantic: "repo" },
+		{ command: "docker compose ps", semantic: "compose" },
+		{ command: "uv run pytest", semantic: "run" },
+		{ command: "python3 -m pytest", semantic: "pytest" },
+		{ command: "shasum -a 256 package.json", semantic: "package.json" },
+		{ command: "cp source.ts dist/target.ts", semantic: "dist/target.ts" },
+	];
+	for (const [index, item] of cases.entries()) {
+		const component = new ToolExecutionComponent("bash", `semantic-${index}`, { command: item.command }, {}, undefined, { requestRender() {} }, repositoryRoot);
+		component.updateResult({ content: [], details: undefined, isError: false });
+		const line = component.render(120).find((candidate) => candidate.includes(item.semantic));
+		const escaped = item.semantic.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		assert.match(line, new RegExp(`\\x1b\\[1;38;2;86;196;112m${escaped}\\x1b\\[0m`), item.command);
+	}
+	await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
+});
+
 test("Command exposes deterministic edit, write, and search facts", async () => {
 	const toolStyle = customPiExtension.commands.get("tool-style");
 	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });
