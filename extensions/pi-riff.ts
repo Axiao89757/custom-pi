@@ -1321,21 +1321,14 @@ function renderMinimalTool(instance: MinimalToolExecutionInstance, width: number
 	const styledLabel = `${TOOL_GREEN_BOLD}${toolSummary.label}${ANSI_STYLE_RESET}`;
 	const styledDetail = toolSummary.detail ? ` ${styleMinimalToolDetail(toolSummary, theme)}` : "";
 	const duration = instance.isPartial ? undefined : renderedToolDuration(instance, width);
-	const action = toolState.displayMode === "command" && instance.toolName === "bash"
-		? bashActionLabel(instance.args.command)
-		: "";
 	const fact = toolState.displayMode === "command" ? minimalToolFact(instance) : "";
 	const contentWidth = Math.max(1, width - visibleWidth(runningMarker));
 	const minimumSummaryWidth = Math.min(contentWidth, Math.max(8, visibleWidth(styledLabel)));
-	const fitsMetadata = (parts: Array<string | undefined>): boolean => {
-		const value = parts.filter(Boolean).join("  ");
-		return !value || visibleWidth(value) + minimumSummaryWidth + 2 <= contentWidth;
-	};
-	let metadataParts: Array<string | undefined> = [action, fact, duration];
-	if (!fitsMetadata(metadataParts)) metadataParts = [action, duration];
-	if (!fitsMetadata(metadataParts)) metadataParts = [action];
-	if (!fitsMetadata(metadataParts)) metadataParts = [duration];
-	const metadata = metadataParts.filter(Boolean).join("  ");
+	const fitsMetadata = (value: string): boolean =>
+		!value || visibleWidth(value) + minimumSummaryWidth + 2 <= contentWidth;
+	let metadata = [fact, duration].filter(Boolean).join("  ");
+	if (!fitsMetadata(metadata)) metadata = duration ?? "";
+	if (!fitsMetadata(metadata)) metadata = "";
 	const styledMetadata = metadata ? theme?.fg("muted", metadata) ?? metadata : "";
 	const metadataWidth = visibleWidth(styledMetadata);
 	const metadataGap = metadataWidth > 0 ? 2 : 0;
