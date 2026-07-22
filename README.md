@@ -38,8 +38,8 @@ Restart Pi after the first install. Use `/reload` after subsequent updates.
 ## Commands
 
 - `/image-size [full|thumbnail]`: toggle or set user image size
-- `/tool-style [full|compact|command|friendly]`: select tool rendering; Friendly is the default
-- `/compact-tools`: leave Full mode and return to Friendly rendering
+- `/tool-style [full|compact|command|friendly]`: select tool rendering; Command is the default
+- `/compact-tools`: leave Full mode and return to Command rendering
 - `/ctx-title [clear]`: show or clear the stable context title
 
 `Ctrl+O` cycles Full, Compact, Command, and Friendly tool rendering. `Ctrl+Shift+I` toggles user images between thumbnail and expanded display.

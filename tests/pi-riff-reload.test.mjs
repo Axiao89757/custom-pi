@@ -133,6 +133,16 @@ test("Friendly labels have no model configuration or sidecar runtime", () => {
 	assert.doesNotMatch(source, /summaryModel/);
 });
 
+test("Command is the default and compact-tools returns to it", async () => {
+	const state = globalThis[Symbol.for("pi.custom-pi.minimal-tool-state")];
+	assert.equal(state.displayMode, "command");
+	const command = customPiExtension.commands.get("compact-tools");
+	assert.match(command.description, /Command rendering/);
+	state.displayMode = "full";
+	await command.handler("", { ui: { setToolsExpanded() {}, notify() {} } });
+	assert.equal(state.displayMode, "command");
+});
+
 test("reload removes legacy display metadata without adding tool parameters", () => {
 	const script = `
 		import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";

@@ -708,13 +708,13 @@ function minimalToolDisplayState(): MinimalToolDisplayState {
 	};
 	const state = globals[MINIMAL_TOOL_STATE] ??= {
 		collapsedStyle: "minimal",
-		displayMode: "friendly",
+		displayMode: "command",
 		groupGeneration: 0,
 		groupsAfterBody: new Set<number>(),
 		runningTools: new Set<MinimalToolExecutionInstance>(),
 		spacedGroups: new Set<number>(),
 	};
-	state.displayMode ??= "friendly";
+	state.displayMode ??= "command";
 	state.collapsedStyle = state.displayMode === "compact" ? "compact" : "minimal";
 	state.groupGeneration ??= 0;
 	state.groupsAfterBody ??= new Set<number>();
@@ -2698,10 +2698,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("compact-tools", {
-		description: "Leave Full mode and return to Friendly rendering",
+		description: "Leave Full mode and return to Command rendering",
 		handler: async (_args, ctx) => {
 			const state = minimalToolDisplayState();
-			if (state.displayMode === "full") setToolDisplayMode("friendly");
+			if (state.displayMode === "full") setToolDisplayMode("command");
 			ctx.ui.setToolsExpanded(false);
 			ctx.ui.notify(`Tool display mode: ${minimalToolDisplayState().displayMode}`, "info");
 		},
