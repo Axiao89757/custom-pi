@@ -294,6 +294,8 @@ test("Command uses relative paths, preserves both ends, and right-aligns facts",
 	const readLine = read.render(80).map(stripTerminalControls).find((line) => line.includes("read"));
 	assert.ok(readLine);
 	assert.match(readLine, /read docs\/agents\/issue-tracker\.md/);
+	const styledReadLine = read.render(80).find((line) => line.includes("issue-tracker.md"));
+	assert.match(styledReadLine, /\x1b\[1;38;2;86;196;112missue-tracker\.md\x1b\[0m/);
 	assert.doesNotMatch(readLine, new RegExp(repositoryRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 	assert.match(readLine, /3 lines\s+\d+(?:\.\d+)?(?:ms|s)$/);
 	assert.equal(readLine.length, 80);

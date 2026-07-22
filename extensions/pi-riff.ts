@@ -824,6 +824,14 @@ function firstShellCommandRange(command: string): [number, number] | undefined {
 	return undefined;
 }
 
+function emphasizedPathRange(detail: string, path: string): [number, number] | undefined {
+	if (!path) return undefined;
+	const pathStart = detail.indexOf(path);
+	if (pathStart < 0) return undefined;
+	const fileNameStart = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
+	return [pathStart + fileNameStart, pathStart + path.length];
+}
+
 function minimalToolSummary(instance: MinimalToolExecutionInstance): MinimalToolSummary {
 	const args = instance.args ?? {};
 	const path = minimalPath(args.path ?? args.file_path, instance.cwd);
@@ -838,18 +846,25 @@ function minimalToolSummary(instance: MinimalToolExecutionInstance): MinimalTool
 			const range = offset !== undefined || limit !== undefined
 				? `:${offset ?? 1}${limit !== undefined ? `-${(offset ?? 1) + limit - 1}` : ""}`
 				: "";
-			return { label: "read", detail: `${path}${range}` };
+			const detail = `${path}${range}`;
+			return { label: "read", detail, emphasizedDetailRange: emphasizedPathRange(detail, path) };
 		}
 		case "edit":
-			return { label: "edit", detail: path };
+			return { label: "edit", detail: path, emphasizedDetailRange: emphasizedPathRange(path, path) };
 		case "write":
-			return { label: "write", detail: path };
-		case "grep":
-			return { label: "grep", detail: `/${compactText(args.pattern, 60)}/ in ${path || "."}` };
-		case "find":
-			return { label: "find", detail: `${compactText(args.pattern, 60)} in ${path || "."}` };
-		case "ls":
-			return { label: "ls", detail: path || "." };
+			return { label: "write", detail: path, emphasizedDetailRange: emphasizedPathRange(path, path) };
+		case "grep": {
+			const detail = `/${compactText(args.pattern, 60)}/ in ${path || "."}`;
+			return { label: "grep", detail, emphasizedDetailRange: emphasizedPathRange(detail, path || ".") };
+		}
+		case "find": {
+			const detail = `${compactText(args.pattern, 60)} in ${path || "."}`;
+			return { label: "find", detail, emphasizedDetailRange: emphasizedPathRange(detail, path || ".") };
+		}
+		case "ls": {
+			const detail = path || ".";
+			return { label: "ls", detail, emphasizedDetailRange: emphasizedPathRange(detail, detail) };
+		}
 		default:
 			return { label: instance.toolName, detail: compactText(minimalArgumentPreview(args), MAX_CALL_LENGTH) };
 	}
