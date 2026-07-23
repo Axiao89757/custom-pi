@@ -396,6 +396,22 @@ test("Command drops passive sleep prefixes before the actionable command", async
 	await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
 });
 
+test("Command highlights each actionable segment in chained shell commands", async () => {
+	const toolStyle = customPiExtension.commands.get("tool-style");
+	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });
+	const originalCommand = "cd code/fto_design_web && node --test dossier.test.mjs && npm run build:type";
+	const component = new ToolExecutionComponent("bash", "chained-command", { command: originalCommand }, {}, undefined, { requestRender() {} }, repositoryRoot);
+	component.updateResult({ content: [], details: undefined, isError: false });
+	const line = component.render(160).find((candidate) => candidate.includes("dossier"));
+	assert.match(line, /\x1b\[1;38;2;86;196;112mcd\x1b\[0m/);
+	assert.match(line, /\x1b\[1;38;2;86;196;112mnode\x1b\[0m/);
+	assert.match(line, /\x1b\[1;38;2;86;196;112m--test\x1b\[0m/);
+	assert.match(line, /\x1b\[1;38;2;86;196;112mnpm\x1b\[0m/);
+	assert.match(line, /\x1b\[1;38;2;86;196;112mbuild:type\x1b\[0m/);
+	assert.equal(component.args.command, originalCommand);
+	await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
+});
+
 test("Command exposes deterministic edit, write, and search facts", async () => {
 	const toolStyle = customPiExtension.commands.get("tool-style");
 	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });

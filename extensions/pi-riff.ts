@@ -800,12 +800,25 @@ type MinimalToolSummary = {
 	label: string;
 };
 
-function shellTokenRanges(command: string, startAt = 0): Array<[number, number]> {
-	const ranges: Array<[number, number]> = [];
-	let index = startAt;
+function shellCommandTokenRanges(command: string): Array<Array<[number, number]>> {
+	const segments: Array<Array<[number, number]>> = [];
+	let segment: Array<[number, number]> = [];
+	let index = 0;
 	while (index < command.length) {
 		while (/\s/.test(command[index] ?? "")) index += 1;
-		if (index >= command.length || /[;&|]/.test(command[index] ?? "")) break;
+		if (index >= command.length) break;
+		if (command.startsWith("&&", index) || command.startsWith("||", index)) {
+			if (segment.length > 0) segments.push(segment);
+			segment = [];
+			index += 2;
+			continue;
+		}
+		if (/[;|]/.test(command[index] ?? "")) {
+			if (segment.length > 0) segments.push(segment);
+			segment = [];
+			index += 1;
+			continue;
+		}
 		const start = index;
 		let quote: "'" | '"' | "`" | undefined;
 		while (index < command.length) {
@@ -824,13 +837,13 @@ function shellTokenRanges(command: string, startAt = 0): Array<[number, number]>
 				index += 1;
 				continue;
 			}
-			if (/\s/.test(character ?? "") || /[;&|]/.test(character ?? "")) break;
+			if (/\s/.test(character ?? "") || /[;|]/.test(character ?? "")) break;
 			index += 1;
 		}
-		if (index > start) ranges.push([start, index]);
-		if (/[;&|]/.test(command[index] ?? "")) break;
+		if (index > start) segment.push([start, index]);
 	}
-	return ranges;
+	if (segment.length > 0) segments.push(segment);
+	return segments;
 }
 
 type IndexedTokenRange = {
@@ -893,12 +906,15 @@ function withSemanticRange(executableRange: [number, number], semanticRange?: [n
 }
 
 function bashSemanticRanges(command: string): Array<[number, number]> {
-	const executableRange = firstShellCommandRange(command);
-	if (!executableRange) return [];
+	return shellCommandTokenRanges(command).flatMap((tokens) => bashSemanticRangesForSegment(command, tokens));
+}
+
+function bashSemanticRangesForSegment(command: string, tokens: Array<[number, number]>): Array<[number, number]> {
+	const executableIndex = tokens.findIndex(([start, end]) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokenText(command, [start, end])));
+	if (executableIndex < 0) return [];
+	const executableRange = tokens[executableIndex];
 	const executable = basename(tokenText(command, executableRange));
-	const tokens = shellTokenRanges(command, executableRange[0]);
-	const executableIndex = tokens.findIndex(([start, end]) => start === executableRange[0] && end === executableRange[1]);
-	const args = executableIndex < 0 ? [] : tokens.slice(executableIndex + 1);
+	const args = tokens.slice(executableIndex + 1);
 
 	if (executable === "git") {
 		const semantic = firstPositionalToken(command, args, new Set(["-C", "-c", "--git-dir", "--work-tree", "--config-env"]));
