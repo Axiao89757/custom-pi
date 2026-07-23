@@ -754,9 +754,18 @@ function minimalPath(value: unknown, cwd: string): string {
 	return isInsideCwd ? relativeToCwd || "." : formatFooterCwd(value);
 }
 
+function stripPassiveShellPrefixes(command: string): string {
+	let stripped = command;
+	while (true) {
+		const match = stripped.match(/^sleep\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:;|&&)\s*/);
+		if (!match) return stripped;
+		stripped = stripped.slice(match[0].length);
+	}
+}
+
 function compactCommandPaths(value: unknown, cwd: string): string {
 	if (typeof value !== "string") return "";
-	let command = value.replace(/\s+/g, " ").trim();
+	let command = stripPassiveShellPrefixes(value.replace(/\s+/g, " ").trim());
 	const resolvedCwd = resolve(cwd);
 	command = command.replaceAll(`${resolvedCwd}${sep}`, "");
 	command = command.replace(new RegExp(`${escapeRegExp(resolvedCwd)}(?=$|[\\s'\"\x60])`, "g"), ".");
@@ -982,6 +991,11 @@ function bashSemanticRanges(command: string): Array<[number, number]> {
 		return withSemanticRange(executableRange, action);
 	}
 
+	if (executable === "tmux") {
+		const action = firstPositionalToken(command, args, new Set(["-L", "-S", "-f"]));
+		return withSemanticRange(executableRange, action?.range);
+	}
+
 	if (executable === "gh" || executable === "docker" || executable === "uv") {
 		const action = firstPositionalToken(command, args, new Set(["--repo", "-R", "--host"]));
 		return withSemanticRange(executableRange, action?.range);
@@ -1190,7 +1204,7 @@ function bashActionLabel(command: unknown): string | undefined {
 function friendlyBashLabel(command: unknown): string {
 	if (typeof command !== "string" || !command.trim()) return "运行命令";
 	return bashActionLabel(command) ?? (() => {
-		const normalized = command.replace(/\s+/g, " ").trim();
+		const normalized = stripPassiveShellPrefixes(command.replace(/\s+/g, " ").trim());
 		const range = firstShellCommandRange(normalized);
 		const executable = range ? basename(normalized.slice(range[0], range[1])) : "命令";
 		return `运行 ${executable}`;

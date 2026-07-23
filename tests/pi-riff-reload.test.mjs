@@ -381,6 +381,21 @@ test("Command highlights one semantic token for frequent shell tools", async () 
 	await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
 });
 
+test("Command drops passive sleep prefixes before the actionable command", async () => {
+	const toolStyle = customPiExtension.commands.get("tool-style");
+	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });
+	const originalCommand = "sleep 240; tmux capture-pane -p -t fto-runtime:worker; redis-cli ZCARD queue";
+	const component = new ToolExecutionComponent("bash", "sleep-prefix", { command: originalCommand }, {}, undefined, { requestRender() {} }, repositoryRoot);
+	component.updateResult({ content: [], details: undefined, isError: false });
+	const line = component.render(100).find((candidate) => candidate.includes("tmux"));
+	assert.match(stripTerminalControls(line), /^\$ tmux capture-pane/);
+	assert.doesNotMatch(stripTerminalControls(line), /sleep 240/);
+	assert.match(line, /\x1b\[1;38;2;86;196;112mtmux\x1b\[0m/);
+	assert.match(line, /\x1b\[1;38;2;86;196;112mcapture-pane\x1b\[0m/);
+	assert.equal(component.args.command, originalCommand);
+	await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
+});
+
 test("Command exposes deterministic edit, write, and search facts", async () => {
 	const toolStyle = customPiExtension.commands.get("tool-style");
 	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });
