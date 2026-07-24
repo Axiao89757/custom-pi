@@ -412,6 +412,32 @@ test("Command highlights each actionable segment in chained shell commands", asy
 	await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
 });
 
+test("Command shows live write and edit progress while arguments stream", async () => {
+	const toolStyle = customPiExtension.commands.get("tool-style");
+	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });
+
+	const write = new ToolExecutionComponent("write", "streaming-write", { path: "/tmp/project/PRD.md", content: "abc" }, {}, undefined, { requestRender() {} }, "/tmp/project");
+	const edit = new ToolExecutionComponent("edit", "streaming-edit", { path: "/tmp/project/app.ts", edits: [{ oldText: "a", newText: "b" }] }, {}, undefined, { requestRender() {} }, "/tmp/project");
+	try {
+		const initialWrite = write.render(80).map(stripTerminalControls).find((line) => line.includes("write"));
+		assert.match(initialWrite, /3 bytes/);
+		write.updateArgs({ path: "/tmp/project/PRD.md", content: "abcdefgh" });
+		const updatedWrite = write.render(80).map(stripTerminalControls).find((line) => line.includes("write"));
+		assert.match(updatedWrite, /8 bytes/);
+		assert.notEqual(initialWrite, updatedWrite);
+
+		assert.match(edit.render(80).map(stripTerminalControls).find((line) => line.includes("edit")), /1 edit/);
+		edit.updateArgs({ path: "/tmp/project/app.ts", edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }] });
+		assert.match(edit.render(80).map(stripTerminalControls).find((line) => line.includes("edit")), /2 edits/);
+	} finally {
+		write.updateResult({ content: [], details: undefined, isError: false });
+		edit.updateResult({ content: [], details: undefined, isError: false });
+		write.render(80);
+		edit.render(80);
+		await toolStyle.handler("friendly", { ui: { notify() {}, setToolsExpanded() {} } });
+	}
+});
+
 test("Command exposes deterministic edit, write, and search facts", async () => {
 	const toolStyle = customPiExtension.commands.get("tool-style");
 	await toolStyle.handler("command", { ui: { notify() {}, setToolsExpanded() {} } });

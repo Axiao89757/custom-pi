@@ -1125,7 +1125,7 @@ function pluralizedFact(count: number, singular: string, plural = `${singular}s`
 }
 
 function minimalToolFact(instance: MinimalToolExecutionInstance): string {
-	if (instance.isPartial || instance.result?.isError) return "";
+	if (instance.result?.isError) return "";
 	const args = instance.args ?? {};
 	switch (instance.toolName) {
 		case "read": {
